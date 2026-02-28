@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GLB Dark Viewer</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <label class="load-button">
+        Load GLB
+        <input id="fileInput" type="file" accept=".glb,model/gltf-binary" />
+      </label>
+      <p id="status">No model loaded.</p>
+    </header>
+
+    <canvas id="viewer"></canvas>
+    <div id="dropHint">Drop a .glb file anywhere to view it</div>
+
+    <script type="module" src="./viewer.js"></script>
+  </body>
+</html>
