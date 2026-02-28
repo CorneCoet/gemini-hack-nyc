@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 
 export default function App() {
@@ -18,11 +19,15 @@ export default function App() {
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.2;
+    renderer.toneMappingExposure = 1.65;
 
     const scene = new THREE.Scene();
     scene.background = new THREE.Color("#05070b");
-    scene.fog = new THREE.Fog("#05070b", 14, 55);
+
+    const pmremGenerator = new THREE.PMREMGenerator(renderer);
+    const roomEnvironment = new RoomEnvironment();
+    const envTexture = pmremGenerator.fromScene(roomEnvironment, 0.05).texture;
+    scene.environment = envTexture;
 
     const camera = new THREE.PerspectiveCamera(
       52,
@@ -37,16 +42,20 @@ export default function App() {
     controls.dampingFactor = 0.06;
     controls.target.set(0, 1, 0);
 
-    const hemiLight = new THREE.HemisphereLight("#c1c8ff", "#11213a", 0.9);
+    const hemiLight = new THREE.HemisphereLight("#c1c8ff", "#11213a", 1.1);
     scene.add(hemiLight);
 
-    const keyLight = new THREE.DirectionalLight("#ffffff", 1.2);
+    const keyLight = new THREE.DirectionalLight("#ffffff", 2);
     keyLight.position.set(3.5, 6, 4);
     scene.add(keyLight);
 
-    const fillLight = new THREE.DirectionalLight("#9ac5ff", 0.35);
+    const fillLight = new THREE.DirectionalLight("#9ac5ff", 1.1);
     fillLight.position.set(-4, 2, -2);
     scene.add(fillLight);
+
+    const rimLight = new THREE.DirectionalLight("#66ddff", 0.7);
+    rimLight.position.set(-3, 5, 5);
+    scene.add(rimLight);
 
     const grid = new THREE.GridHelper(20, 20, "#4de3ff44", "#4de3ff18");
     grid.position.y = -0.001;
@@ -109,6 +118,21 @@ export default function App() {
     const setModel = (model) => {
       clearModel();
       currentModel = model;
+      currentModel.traverse((object) => {
+        if (!object.isMesh) return;
+
+        const setMaterialProps = (material) => {
+          if (!material || !("envMapIntensity" in material)) return;
+          material.envMapIntensity = 1.4;
+          material.needsUpdate = true;
+        };
+
+        if (Array.isArray(object.material)) {
+          object.material.forEach(setMaterialProps);
+          return;
+        }
+        setMaterialProps(object.material);
+      });
       scene.add(currentModel);
       frameObject(currentModel);
     };
@@ -196,6 +220,9 @@ export default function App() {
 
       clearModel();
       controls.dispose();
+      envTexture.dispose();
+      roomEnvironment.dispose();
+      pmremGenerator.dispose();
       renderer.dispose();
       loadFileRef.current = null;
     };
