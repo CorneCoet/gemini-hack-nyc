@@ -4,17 +4,70 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 
+const ANALYSIS_MODEL = "gemini-3.1-pro-preview";
+
 export default function App() {
   const canvasRef = useRef(null);
   const loadFileRef = useRef(null);
   const [status, setStatus] = useState("No model loaded.");
   const [dragActive, setDragActive] = useState(false);
+  const [assetName, setAssetName] = useState("");
+  const [analysis, setAnalysis] = useState("Load a GLB and click Analyze View.");
+  const [analysisStatus, setAnalysisStatus] = useState("Waiting for screenshot.");
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [capturePreview, setCapturePreview] = useState("");
+
+  const waitForRenderFrames = () =>
+    new Promise((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(resolve));
+    });
+
+  const analyzeCurrentView = async (nameOverride = "") => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const finalAssetName = nameOverride || assetName || "unknown.glb";
+    setIsAnalyzing(true);
+    setAnalysisStatus(`Analyzing with ${ANALYSIS_MODEL}...`);
+
+    try {
+      await waitForRenderFrames();
+      const imageDataUrl = canvas.toDataURL("image/jpeg", 0.92);
+      setCapturePreview(imageDataUrl);
+
+      const response = await fetch("/api/describe-scene", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          imageDataUrl,
+          assetName: finalAssetName,
+        }),
+      });
+
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload?.error ?? "Gemini analysis request failed.");
+      }
+
+      setAnalysis(payload.description);
+      setAnalysisStatus(`Analyzed by ${payload.model ?? ANALYSIS_MODEL}.`);
+    } catch (error) {
+      setAnalysis("Could not analyze this view.");
+      setAnalysisStatus(error?.message ?? "Unknown analysis error.");
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return undefined;
 
-    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    const renderer = new THREE.WebGLRenderer({
+      canvas,
+      antialias: true,
+      preserveDrawingBuffer: true,
+    });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -137,27 +190,27 @@ export default function App() {
       frameObject(currentModel);
     };
 
+    const parseGlb = (data) =>
+      new Promise((resolve, reject) => {
+        loader.parse(data, "", resolve, reject);
+      });
+
     const loadGlbFile = async (file) => {
       if (!file) return;
       setStatus(`Loading ${file.name}...`);
 
       try {
         const data = await file.arrayBuffer();
-        loader.parse(
-          data,
-          "",
-          (gltf) => {
-            setModel(gltf.scene);
-            setStatus(`Loaded ${file.name}`);
-          },
-          (error) => {
-            const message = error?.message ?? "Unknown GLB parse error.";
-            setStatus(`Could not load ${file.name}: ${message}`);
-          }
-        );
+        const gltf = await parseGlb(data);
+        setModel(gltf.scene);
+        setAssetName(file.name);
+        setStatus(`Loaded ${file.name}`);
+        setAnalysisStatus("Model loaded. Capturing screenshot...");
+        await analyzeCurrentView(file.name);
       } catch (error) {
         const message = error?.message ?? "Unknown file read error.";
         setStatus(`Could not read ${file.name}: ${message}`);
+        setAnalysisStatus("Could not load model for analysis.");
       }
     };
 
@@ -236,16 +289,43 @@ export default function App() {
 
   return (
     <div className={dragActive ? "app drag-active" : "app"}>
-      <header className="topbar">
-        <label className="load-button">
-          Load GLB
-          <input type="file" accept=".glb,model/gltf-binary" onChange={onFileChange} />
-        </label>
-        <p className="status">{status}</p>
-      </header>
+      <section className="viewer-shell">
+        <header className="topbar">
+          <label className="load-button">
+            Load GLB
+            <input type="file" accept=".glb,model/gltf-binary" onChange={onFileChange} />
+          </label>
+          <p className="status">{status}</p>
+        </header>
 
-      <canvas ref={canvasRef} className="viewer" />
-      <div className="drop-hint">Drop a .glb file anywhere to view it</div>
+        <canvas ref={canvasRef} className="viewer" />
+        <div className="drop-hint">Drop a .glb file anywhere to view it</div>
+      </section>
+
+      <aside className="analysis-panel">
+        <div className="analysis-head">
+          <h2>Gemini Vision</h2>
+          <p className="analysis-model">{ANALYSIS_MODEL}</p>
+        </div>
+
+        <button
+          type="button"
+          className="analyze-button"
+          onClick={() => analyzeCurrentView()}
+          disabled={isAnalyzing}
+        >
+          {isAnalyzing ? "Analyzing..." : "Analyze View"}
+        </button>
+
+        <p className="analysis-status">{analysisStatus}</p>
+        <p className="analysis-asset">Asset: {assetName || "none loaded"}</p>
+
+        {capturePreview ? (
+          <img className="capture-preview" src={capturePreview} alt="Viewer screenshot for Gemini" />
+        ) : null}
+
+        <pre className="analysis-text">{analysis}</pre>
+      </aside>
     </div>
   );
 }
