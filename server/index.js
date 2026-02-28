@@ -597,6 +597,184 @@ function parseTagModelOutput(rawText) {
   };
 }
 
+function parseSvgOverlayModelOutput(rawText, component) {
+  const parsed = parseJsonLoose(rawText);
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+    return parsed;
+  }
+
+  const text = firstString(rawText);
+  if (!text) return null;
+  const svgMatch = text.match(/<svg[\s\S]*<\/svg>/i);
+  if (!svgMatch) return null;
+
+  return {
+    componentName: firstString(component?.name, "component"),
+    captureLabel: firstString(component?.captureLabel, "current"),
+    found: true,
+    confidence: "low",
+    x: Number(component?.x),
+    y: Number(component?.y),
+    width: 0.16,
+    height: 0.16,
+    interactionType: inferInteractionType(component),
+    interactionSummary: "Generated from fallback SVG extraction.",
+    svgCode: svgMatch[0],
+  };
+}
+
+function sanitizeGeneratedSvg(svgCode) {
+  const raw = firstString(svgCode);
+  if (!raw) return "";
+
+  const sanitized = raw
+    .replace(/<\?xml[\s\S]*?\?>/gi, "")
+    .replace(/<!doctype[\s\S]*?>/gi, "")
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<foreignObject[\s\S]*?<\/foreignObject>/gi, "")
+    .replace(/\son\w+\s*=\s*"[^"]*"/gi, "")
+    .replace(/\son\w+\s*=\s*'[^']*'/gi, "")
+    .replace(/javascript:/gi, "");
+
+  const svgMatch = sanitized.match(/<svg[\s\S]*<\/svg>/i);
+  return svgMatch ? svgMatch[0].trim() : "";
+}
+
+function numberInRange(value, min, max, fallback) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  return Math.min(max, Math.max(min, numeric));
+}
+
+function normalizeSvgOverlayResult(parsed, component, fallbackCaptureLabel) {
+  const defaultX = numberInRange(component?.x, 0, 1, 0.5);
+  const defaultY = numberInRange(component?.y, 0, 1, 0.5);
+  const x = numberInRange(parsed?.x, 0, 1, defaultX);
+  const y = numberInRange(parsed?.y, 0, 1, defaultY);
+  const width = numberInRange(parsed?.width, 0.05, 0.7, 0.16);
+  const height = numberInRange(parsed?.height, 0.05, 0.7, 0.16);
+  const confidence = firstString(parsed?.confidence, "unknown");
+  const captureLabel = normalizeTagCaptureLabel(
+    firstString(parsed?.captureLabel),
+    fallbackCaptureLabel
+  );
+  const found = parsed?.found === false ? false : true;
+  const svgCode = sanitizeGeneratedSvg(parsed?.svgCode);
+  const hasSvg = Boolean(svgCode);
+  const fallbackInteractionType = inferInteractionType(component);
+  const interactionType = normalizeInteractionType(
+    firstString(parsed?.interactionType),
+    fallbackInteractionType
+  );
+
+  return {
+    componentName: firstString(parsed?.componentName, firstString(component?.name, "component")),
+    found,
+    confidence,
+    captureLabel,
+    x,
+    y,
+    width,
+    height,
+    interactionType,
+    interactionSummary: firstString(parsed?.interactionSummary),
+    svgCode,
+    ready: found && hasSvg,
+  };
+}
+
+function buildFallbackInteractiveSvg(componentName, interactionType) {
+  const safeLabel = firstString(componentName, "Component").replace(/</g, "&lt;");
+
+  switch (interactionType) {
+    case "gauge":
+      return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" role="img" aria-label="${safeLabel} interactive gauge">
+  <style>
+    .dial{fill:#0d1322;stroke:#6ee7ff;stroke-width:10}
+    .ticks{stroke:#9cc6ff;stroke-width:4;opacity:.55}
+    .needle{stroke:#ffcf6e;stroke-width:7;stroke-linecap:round;transform-origin:120px 150px;animation:sweep 2.4s ease-in-out infinite alternate}
+    .hub{fill:#f1f5ff}
+    @keyframes sweep{from{transform:rotate(-32deg)}to{transform:rotate(38deg)}}
+  </style>
+  <circle class="dial" cx="120" cy="150" r="74"/>
+  <path class="ticks" d="M60 150h16M164 150h16M78 108l11 11M151 181l11 11M78 192l11-11M151 119l11-11"/>
+  <line class="needle" x1="120" y1="150" x2="174" y2="124"/>
+  <circle class="hub" cx="120" cy="150" r="8"/>
+</svg>`;
+    case "lid":
+      return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 260 220" role="img" aria-label="${safeLabel} interactive lid">
+  <style>
+    .bowl{fill:#e9eef7;fill-opacity:.25;stroke:#d7e8ff;stroke-width:4}
+    .lid{fill:#dbe4f6;fill-opacity:.82;stroke:#f6fbff;stroke-width:3;transform-origin:130px 62px;animation:lift 2.2s ease-in-out infinite}
+    .glow{fill:#7dd3fc;fill-opacity:.17;animation:pulse 2.2s ease-in-out infinite}
+    @keyframes lift{0%,100%{transform:translateY(0)}50%{transform:translateY(-12px)}}
+    @keyframes pulse{0%,100%{fill-opacity:.1}50%{fill-opacity:.3}}
+  </style>
+  <ellipse class="glow" cx="130" cy="108" rx="92" ry="52"/>
+  <ellipse class="bowl" cx="130" cy="114" rx="90" ry="56"/>
+  <ellipse class="lid" cx="130" cy="62" rx="82" ry="34"/>
+</svg>`;
+    case "dial":
+      return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" role="img" aria-label="${safeLabel} interactive dial">
+  <style>
+    .outer{fill:#0f172a;stroke:#8cc6ff;stroke-width:8}
+    .knob{fill:#dbeafe;stroke:#f8fbff;stroke-width:3;transform-origin:120px 120px;animation:spin 3s linear infinite}
+    .mark{fill:#1f2937}
+    @keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+  </style>
+  <circle class="outer" cx="120" cy="120" r="88"/>
+  <circle class="knob" cx="120" cy="120" r="52"/>
+  <rect class="mark" x="116" y="76" width="8" height="24" rx="4"/>
+</svg>`;
+    case "lever":
+      return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 280 180" role="img" aria-label="${safeLabel} interactive lever">
+  <style>
+    .base{fill:#172033;stroke:#7ab8ff;stroke-width:5}
+    .arm{fill:#dbeafe;transform-origin:86px 94px;animation:tilt 2s ease-in-out infinite}
+    .tip{fill:#fcd34d;animation:flash 2s ease-in-out infinite}
+    @keyframes tilt{0%,100%{transform:rotate(0deg)}50%{transform:rotate(-18deg)}}
+    @keyframes flash{0%,100%{opacity:.7}50%{opacity:1}}
+  </style>
+  <rect class="base" x="26" y="88" width="88" height="28" rx="10"/>
+  <rect class="arm" x="80" y="44" width="24" height="92" rx="10"/>
+  <circle class="tip" cx="92" cy="42" r="16"/>
+</svg>`;
+    case "button":
+    default:
+      return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 220" role="img" aria-label="${safeLabel} interactive button">
+  <style>
+    .ring{fill:#4de3ff22;stroke:#9be7ff;stroke-width:4;animation:pulse 1.8s ease-in-out infinite}
+    .core{fill:#e6f4ff;stroke:#cddff9;stroke-width:4}
+    .dot{fill:#1e293b;animation:blink 1.2s steps(2) infinite}
+    @keyframes pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.12)}}
+    @keyframes blink{0%,45%{opacity:1}46%,100%{opacity:.45}}
+  </style>
+  <circle class="ring" cx="110" cy="110" r="82"/>
+  <circle class="core" cx="110" cy="110" r="48"/>
+  <circle class="dot" cx="110" cy="110" r="12"/>
+</svg>`;
+  }
+}
+
+function inferInteractionType(component) {
+  const token = normalizeToken(
+    `${firstString(component?.name)} ${firstString(component?.location)} ${firstString(component?.purpose)}`
+  );
+  if (/(gauge|pressure)/.test(token)) return "gauge";
+  if (/(hopper|lid|cover)/.test(token)) return "lid";
+  if (/(dial|knob|wheel|grind size|grind amount)/.test(token)) return "dial";
+  if (/(portafilter|lever|wand|handle|spout)/.test(token)) return "lever";
+  if (/(button|power|cup|switch)/.test(token)) return "button";
+  return "generic";
+}
+
+function normalizeInteractionType(value, fallback = "generic") {
+  const cleaned = firstString(value).toLowerCase().replace(/[^a-z]+/g, "");
+  const allowed = new Set(["button", "lid", "gauge", "dial", "lever", "generic"]);
+  if (allowed.has(cleaned)) return cleaned;
+  return allowed.has(fallback) ? fallback : "generic";
+}
+
 function normalizeTagResult(parsed, fallbackComponentName, fallbackCaptureLabel) {
   const found = Boolean(parsed?.found);
   const x = Number(parsed?.x);
@@ -1012,6 +1190,98 @@ async function fetchGeminiTagForComponent(apiKey, assetName, component, captures
   return getGeminiText(payload);
 }
 
+async function fetchGeminiSvgOverlayForComponent(apiKey, assetName, component, captures) {
+  const componentName = firstString(component?.name, "component");
+  const componentLocation = firstString(component?.location);
+  const componentPurpose = firstString(component?.purpose);
+  const seedX = numberInRange(component?.x, 0, 1, 0.5);
+  const seedY = numberInRange(component?.y, 0, 1, 0.5);
+  const seedCapture = normalizeTagCaptureLabel(component?.captureLabel, "current");
+  const hints = buildComponentGuideHints(component);
+  const aliasHint = hints.aliases.join(", ");
+
+  const prompt = [
+    "You are generating an interactive SVG overlay for a tagged machine component in a GLB viewer.",
+    `Asset file name: ${assetName}.`,
+    `Target component: ${componentName}.`,
+    `Aliases: ${aliasHint}.`,
+    componentLocation ? `Location hint: ${componentLocation}.` : "",
+    componentPurpose ? `Purpose hint: ${componentPurpose}.` : "",
+    `Existing tag seed: capture=${seedCapture}, x=${seedX.toFixed(4)}, y=${seedY.toFixed(4)}.`,
+    "Choose the best capture where the component is most visible and return normalized placement values.",
+    "Design interaction behavior for the component meaningfully, for example:",
+    "- button flashes/pulses",
+    "- lid lifts",
+    "- gauge needle sweeps",
+    "- dial/wheel rotates",
+    "- handle/part slides or pivots",
+    "SVG requirements:",
+    "- Inline SVG only, no external assets",
+    "- No JavaScript and no <script> tag",
+    "- Use CSS and/or SMIL animation for interactivity",
+    "- Keep SVG mostly transparent except the visual indicator",
+    "Return strict JSON only (no markdown):",
+    "{",
+    '  "componentName": "string",',
+    '  "captureLabel": "current|iso|front|right|back|left|top",',
+    '  "found": true,',
+    '  "confidence": "high|medium|low",',
+    '  "x": 0.52,',
+    '  "y": 0.34,',
+    '  "width": 0.18,',
+    '  "height": 0.18,',
+    '  "interactionType": "button|lid|gauge|dial|lever|generic",',
+    '  "interactionSummary": "short sentence",',
+    '  "svgCode": "<svg ...>...</svg>"',
+    "}",
+    "x,y,width,height are normalized to the image size in [0,1].",
+    "Keep width/height tightly around the target component size.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  const endpoint =
+    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(MODEL_NAME)}:generateContent` +
+    `?key=${encodeURIComponent(apiKey)}`;
+
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      contents: [
+        {
+          parts: [
+            { text: prompt },
+            ...captures.flatMap((capture) => [
+              { text: `Capture label: ${capture.label}` },
+              {
+                inlineData: {
+                  mimeType: capture.mimeType,
+                  data: capture.data,
+                },
+              },
+            ]),
+          ],
+        },
+      ],
+      generationConfig: {
+        temperature: 0.2,
+        maxOutputTokens: 2200,
+        responseMimeType: "application/json",
+      },
+    }),
+  });
+
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(
+      payload?.error?.message ?? `Gemini SVG request failed with status ${response.status}.`
+    );
+  }
+
+  return getGeminiText(payload);
+}
+
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true, model: MODEL_NAME });
 });
@@ -1336,6 +1606,154 @@ app.post("/api/tag-component", async (req, res) => {
     });
     res.status(500).json({
       error: error?.message ?? "Failed to tag component.",
+    });
+  }
+});
+
+app.post("/api/generate-component-svg", async (req, res) => {
+  const svgRequestId = `${Date.now().toString(36)}-${Math.random()
+    .toString(36)
+    .slice(2, 8)}`;
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    res.status(500).json({
+      error:
+        "Missing GEMINI_API_KEY on server. Add it in .env before starting npm run dev.",
+    });
+    return;
+  }
+
+  const { imageDataUrl, captures, assetName, component } = req.body ?? {};
+  if (!component || typeof component !== "object") {
+    res.status(400).json({ error: "Missing component payload for SVG generation." });
+    return;
+  }
+
+  const parsedCaptures = (Array.isArray(captures) ? captures : [])
+    .map((capture) => {
+      const parsed = parseImageDataUrl(capture?.imageDataUrl);
+      if (!parsed) return null;
+      return {
+        label: normalizeTagCaptureLabel(capture?.label, "current"),
+        mimeType: parsed.mimeType,
+        data: parsed.data,
+      };
+    })
+    .filter(Boolean)
+    .slice(0, 10);
+
+  if (!parsedCaptures.length) {
+    const parsedImage = parseImageDataUrl(imageDataUrl);
+    if (parsedImage) {
+      parsedCaptures.push({
+        label: "current",
+        mimeType: parsedImage.mimeType,
+        data: parsedImage.data,
+      });
+    }
+  }
+
+  if (!parsedCaptures.length) {
+    res.status(400).json({ error: "Invalid or missing screenshot image data." });
+    return;
+  }
+
+  const userAssetName =
+    typeof assetName === "string" && assetName.trim() ? assetName.trim() : "unknown asset";
+  const componentName = firstString(component?.name, "component");
+  logTagDebug("generate-component-svg request", {
+    svgRequestId,
+    assetName: userAssetName,
+    componentName,
+    componentLocation: firstString(component?.location),
+    componentPurpose: firstString(component?.purpose),
+    seedX: component?.x,
+    seedY: component?.y,
+    seedCapture: firstString(component?.captureLabel),
+    captureCount: parsedCaptures.length,
+  });
+
+  try {
+    const rawText = await fetchGeminiSvgOverlayForComponent(
+      apiKey,
+      userAssetName,
+      component,
+      parsedCaptures
+    );
+    logTagDebug("generate-component-svg raw", {
+      svgRequestId,
+      componentName,
+      rawPreview: previewText(rawText, 560),
+    });
+
+    let parsed = parseSvgOverlayModelOutput(rawText, component);
+    if (!parsed && rawText) {
+      try {
+        const repairedText = await coerceToStrictJson(apiKey, rawText);
+        parsed = parseSvgOverlayModelOutput(repairedText, component);
+        logTagDebug("generate-component-svg coerce-to-json fallback", {
+          svgRequestId,
+          componentName,
+          repairedParsed: Boolean(parsed),
+          repairedPreview: previewText(repairedText, 360),
+        });
+      } catch (error) {
+        logTagDebug("generate-component-svg coerce-to-json failed", {
+          svgRequestId,
+          componentName,
+          message: error?.message ?? "Unknown coercion error",
+        });
+      }
+    }
+
+    const normalized = normalizeSvgOverlayResult(
+      parsed,
+      component,
+      parsedCaptures[0]?.label || "current"
+    );
+
+    if (!normalized.ready) {
+      const interactionType = inferInteractionType(component);
+      const fallbackSvg = buildFallbackInteractiveSvg(componentName, interactionType);
+      normalized.svgCode = sanitizeGeneratedSvg(fallbackSvg);
+      normalized.interactionType = interactionType;
+      normalized.found = true;
+      normalized.confidence = normalized.confidence === "unknown" ? "low" : normalized.confidence;
+      normalized.interactionSummary =
+        normalized.interactionSummary ||
+        `Fallback interactive SVG: ${interactionType} motion.`;
+      normalized.ready = Boolean(normalized.svgCode);
+      logTagDebug("generate-component-svg fallback-svg used", {
+        svgRequestId,
+        componentName,
+        interactionType,
+        ready: normalized.ready,
+      });
+    }
+
+    res.json({
+      model: MODEL_NAME,
+      componentName: normalized.componentName,
+      found: normalized.found && normalized.ready,
+      confidence: normalized.confidence,
+      captureLabel: normalized.captureLabel,
+      x: normalized.x,
+      y: normalized.y,
+      width: normalized.width,
+      height: normalized.height,
+      interactionType: normalized.interactionType,
+      interactionSummary: normalized.interactionSummary,
+      svgCode: normalized.svgCode,
+      rawText,
+    });
+  } catch (error) {
+    logTagDebug("generate-component-svg failed", {
+      svgRequestId,
+      componentName,
+      message: error?.message ?? "Unknown SVG generation error",
+    });
+    res.status(500).json({
+      error: error?.message ?? "Failed to generate SVG overlay.",
     });
   }
 });

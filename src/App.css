@@ -186,6 +186,12 @@ body {
   font-size: 12px;
 }
 
+.overlay-status {
+  margin: 0 0 6px 0;
+  color: #a9bad2;
+  font-size: 12px;
+}
+
 .tag-current {
   margin: 0 0 8px 0;
   color: var(--text);
@@ -265,6 +271,46 @@ body {
 .component-item {
   display: grid;
   gap: 2px;
+}
+
+.component-overlay-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
+.component-overlay-meta {
+  margin: 0;
+  color: #8ca4c3;
+  font-size: 12px;
+}
+
+.overlay-generate-button,
+.overlay-remove-button {
+  border: 1px solid #ffffff2f;
+  border-radius: 8px;
+  background: #101b2f;
+  color: var(--text);
+  padding: 6px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.overlay-generate-button:hover,
+.overlay-remove-button:hover {
+  border-color: #ffffff66;
+}
+
+.overlay-generate-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.overlay-list-item {
+  display: grid;
+  gap: 4px;
 }
 
 .tag-chip {
