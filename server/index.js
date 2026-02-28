@@ -95,6 +95,121 @@ const ESPRESSO_COMPONENT_GUIDE = [
     clue: "Bottom tray where drips collect beneath the group head.",
   },
 ];
+const ESPRESSO_COMPONENT_FALLBACKS = [
+  {
+    name: "Bean Hopper",
+    location: "Top center",
+    purpose: "Stores whole beans before grinding",
+    notes: "Transparent bowl/container on top",
+    confidence: "low",
+  },
+  {
+    name: "Cup Warming Tray",
+    location: "Top panel",
+    purpose: "Warms cups before extraction",
+    notes: "Flat tray surface near the hopper",
+    confidence: "low",
+  },
+  {
+    name: "Group Head",
+    location: "Front center",
+    purpose: "Brew outlet where portafilter locks in",
+    notes: "Directly above portafilter position",
+    confidence: "low",
+  },
+  {
+    name: "Portafilter",
+    location: "Front lower center",
+    purpose: "Holds coffee basket during extraction",
+    notes: "Handled metal filter holder",
+    confidence: "low",
+  },
+  {
+    name: "Steam Wand",
+    location: "Front right side",
+    purpose: "Steams and textures milk",
+    notes: "Swiveling wand near milk pitcher area",
+    confidence: "low",
+  },
+  {
+    name: "Hot Water Outlet",
+    location: "Front area",
+    purpose: "Dispenses hot water",
+    notes: "Separate from steam wand",
+    confidence: "low",
+  },
+  {
+    name: "Pressure Gauge",
+    location: "Front panel center",
+    purpose: "Displays extraction pressure",
+    notes: "Round analog dial",
+    confidence: "low",
+  },
+  {
+    name: "Water Tank",
+    location: "Rear side",
+    purpose: "Stores water supply",
+    notes: "Rear removable reservoir",
+    confidence: "low",
+  },
+  {
+    name: "Drip Tray",
+    location: "Bottom front",
+    purpose: "Collects overflow and drips",
+    notes: "Grill and tray beneath group head",
+    confidence: "low",
+  },
+];
+const ESPRESSO_BUTTON_FALLBACKS = [
+  {
+    name: "Power Button",
+    location: "Front panel",
+    function: "Turns the machine on and off",
+    color: "",
+    labelText: "POWER",
+    confidence: "low",
+  },
+  {
+    name: "1 Cup Button",
+    location: "Front panel right",
+    function: "Starts a single-shot extraction",
+    color: "",
+    labelText: "1 CUP",
+    confidence: "low",
+  },
+  {
+    name: "2 Cup Button",
+    location: "Front panel right",
+    function: "Starts a double-shot extraction",
+    color: "",
+    labelText: "2 CUP",
+    confidence: "low",
+  },
+  {
+    name: "Grind Amount Dial",
+    location: "Front panel left",
+    function: "Adjusts dose amount",
+    color: "",
+    labelText: "GRIND AMOUNT",
+    confidence: "low",
+  },
+  {
+    name: "Grind Size Selector",
+    location: "Front panel left",
+    function: "Adjusts grind fineness",
+    color: "",
+    labelText: "GRIND SIZE",
+    confidence: "low",
+  },
+  {
+    name: "Filter Size Button",
+    location: "Front panel left",
+    function: "Selects single or double basket mode",
+    color: "",
+    labelText: "FILTER SIZE",
+    confidence: "low",
+  },
+];
 
 function parseImageDataUrl(dataUrl) {
   if (typeof dataUrl !== "string") return null;
@@ -335,6 +450,304 @@ function buildComponentGuideHints(component) {
         `- ${entry.canonical} (aliases: ${entry.aliases.join(", ")}): ${entry.clue}`
     ).join("\n"),
   };
+}
+
+function isLikelyEspressoContext(assetName, analysis) {
+  const summary = normalizeToken(
+    [
+      assetName,
+      analysis?.machineName,
+      analysis?.machineType,
+      analysis?.identification,
+      ...(Array.isArray(analysis?.components) ? analysis.components.map((item) => item?.name) : []),
+      ...(Array.isArray(analysis?.buttons) ? analysis.buttons.map((item) => item?.name) : []),
+    ]
+      .filter(Boolean)
+      .join(" ")
+  );
+
+  if (!summary) return false;
+  if (summary.includes("breville")) return true;
+  if (summary.includes("espresso")) return true;
+  if (summary.includes("barista")) return true;
+  if (
+    summary.includes("coffee") &&
+    /(portafilter|steam|grind|hopper|gauge|wand)/.test(summary)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function mergeUniqueByName(existingItems, fallbackItems) {
+  const output = Array.isArray(existingItems) ? [...existingItems] : [];
+  const seen = new Set(
+    output.map((item) => normalizeToken(item?.name)).filter(Boolean)
+  );
+
+  for (const item of fallbackItems) {
+    const token = normalizeToken(item?.name);
+    if (!token || seen.has(token)) continue;
+    seen.add(token);
+    output.push({ ...item });
+  }
+  return output;
+}
+
+function mergeUniqueQueries(existingQueries, fallbackQueries) {
+  const output = Array.isArray(existingQueries) ? [...existingQueries] : [];
+  const seen = new Set(output.map((query) => normalizeToken(query)).filter(Boolean));
+
+  for (const query of fallbackQueries) {
+    const cleaned = firstString(query);
+    const token = normalizeToken(cleaned);
+    if (!token || seen.has(token)) continue;
+    seen.add(token);
+    output.push(cleaned);
+  }
+  return output;
+}
+
+function enrichAnalysisWithFallbacks(assetName, analysis) {
+  if (!isLikelyEspressoContext(assetName, analysis)) return analysis;
+
+  const machineName = firstString(analysis.machineName);
+  const machineType = firstString(analysis.machineType);
+  const identification = firstString(analysis.identification);
+  const confidence = firstString(analysis.confidence, "unknown");
+
+  const mergedComponents = mergeUniqueByName(
+    analysis.components,
+    ESPRESSO_COMPONENT_FALLBACKS
+  );
+  const mergedButtons = mergeUniqueByName(
+    analysis.buttons,
+    ESPRESSO_BUTTON_FALLBACKS
+  );
+  const mergedQueries = mergeUniqueQueries(analysis.searchQueries, [
+    "Breville Barista Express components",
+    "Breville BES870 parts diagram",
+    "espresso machine group head and portafilter",
+  ]);
+
+  return {
+    ...analysis,
+    machineName:
+      machineName && normalizeToken(machineName) !== "unknown machine"
+        ? machineName
+        : "Breville Espresso Machine",
+    machineType: machineType || "Espresso Machine",
+    identification:
+      identification ||
+      "Semi-automatic espresso machine with integrated grinder, group head, steam wand, and portafilter.",
+    confidence: confidence === "unknown" ? "medium" : confidence,
+    buttons: mergedButtons,
+    components: mergedComponents,
+    searchQueries: mergedQueries,
+  };
+}
+
+function parseTagModelOutput(rawText) {
+  const parsed = parseJsonLoose(rawText);
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+    return parsed;
+  }
+
+  const text = firstString(rawText);
+  if (!text) return null;
+
+  const compact = text.replace(/\s+/g, " ");
+  const numericPattern = "(-?(?:\\d+\\.\\d+|\\d+|\\.\\d+))";
+  const xMatch =
+    compact.match(new RegExp(`["']?x["']?\\s*[:=]\\s*${numericPattern}`, "i")) ||
+    compact.match(new RegExp(`\\bx\\s*[:=]\\s*${numericPattern}`, "i"));
+  const yMatch =
+    compact.match(new RegExp(`["']?y["']?\\s*[:=]\\s*${numericPattern}`, "i")) ||
+    compact.match(new RegExp(`\\by\\s*[:=]\\s*${numericPattern}`, "i"));
+  const pairMatch = compact.match(
+    /\(\s*(-?(?:\d+\.\d+|\d+|\.\d+))\s*,\s*(-?(?:\d+\.\d+|\d+|\.\d+))\s*\)/
+  );
+  const foundMatch = compact.match(/["']?found["']?\s*[:=]\s*(true|false)/i);
+  const confidenceMatch = compact.match(
+    /["']?confidence["']?\s*[:=]\s*["']?(high|medium|low|unknown)["']?/i
+  );
+  const captureMatch = compact.match(
+    /["']?(captureLabel|view|preset)["']?\s*[:=]\s*["']?(current|iso|front|right|back|left|top)["']?/i
+  );
+  const reasonMatch = compact.match(/["']?reason["']?\s*[:=]\s*["']([^"']+)["']/i);
+
+  const x = xMatch ? Number(xMatch[1]) : pairMatch ? Number(pairMatch[1]) : null;
+  const y = yMatch ? Number(yMatch[1]) : pairMatch ? Number(pairMatch[2]) : null;
+  const hasSignal =
+    Number.isFinite(x) ||
+    Number.isFinite(y) ||
+    Boolean(foundMatch) ||
+    Boolean(confidenceMatch) ||
+    Boolean(captureMatch);
+
+  if (!hasSignal) return null;
+
+  return {
+    found: foundMatch ? foundMatch[1].toLowerCase() === "true" : true,
+    x,
+    y,
+    confidence: confidenceMatch ? confidenceMatch[1].toLowerCase() : "unknown",
+    captureLabel: captureMatch ? captureMatch[2].toLowerCase() : "",
+    reason: reasonMatch ? reasonMatch[1].trim() : "",
+  };
+}
+
+function normalizeTagResult(parsed, fallbackComponentName, fallbackCaptureLabel) {
+  const found = Boolean(parsed?.found);
+  const x = Number(parsed?.x);
+  const y = Number(parsed?.y);
+  const xIsValid = Number.isFinite(x) && x >= 0 && x <= 1;
+  const yIsValid = Number.isFinite(y) && y >= 0 && y <= 1;
+  const finalFound = found && xIsValid && yIsValid;
+  const suggestedCaptureLabel = firstString(parsed?.captureLabel);
+  const captureLabel = finalFound
+    ? normalizeTagCaptureLabel(suggestedCaptureLabel, fallbackCaptureLabel)
+    : null;
+
+  return {
+    componentName: firstString(parsed?.componentName, fallbackComponentName),
+    found,
+    x,
+    y,
+    xIsValid,
+    yIsValid,
+    finalFound,
+    suggestedCaptureLabel,
+    captureLabel,
+    confidence: firstString(parsed?.confidence, "unknown"),
+    reason: firstString(parsed?.reason),
+  };
+}
+
+function rankCapturesForComponent(component, captures) {
+  const query = normalizeToken(
+    `${firstString(component?.name)} ${firstString(component?.location)} ${firstString(component?.purpose)}`
+  );
+  const hints = buildComponentGuideHints(component);
+  const aliases = hints.aliases.map((alias) => normalizeToken(alias)).join(" ");
+  const allTokens = `${query} ${aliases}`;
+
+  const preferredOrder = (() => {
+    if (/(bean|hopper|top|grinder)/.test(allTokens)) {
+      return ["top", "iso", "current", "front", "right", "left", "back"];
+    }
+    if (/(right|steam|wand|water)/.test(allTokens)) {
+      return ["right", "front", "iso", "current", "top", "back", "left"];
+    }
+    if (/(left|dial|grind amount|grind size|power)/.test(allTokens)) {
+      return ["left", "front", "iso", "current", "top", "back", "right"];
+    }
+    if (/(rear|back|tank|reservoir)/.test(allTokens)) {
+      return ["back", "left", "right", "iso", "current", "top", "front"];
+    }
+    if (/(front|panel|group|brew|portafilter|gauge|cup|button)/.test(allTokens)) {
+      return ["front", "iso", "current", "right", "left", "top", "back"];
+    }
+    return ["iso", "front", "current", "right", "left", "top", "back"];
+  })();
+
+  const map = new Map(captures.map((capture) => [capture.label, capture]));
+  const ordered = [];
+
+  for (const label of preferredOrder) {
+    if (!map.has(label)) continue;
+    ordered.push(map.get(label));
+    map.delete(label);
+  }
+
+  for (const capture of map.values()) {
+    ordered.push(capture);
+  }
+
+  return ordered;
+}
+
+async function fetchGeminiTagForSingleCapture(apiKey, assetName, component, capture) {
+  const componentName = firstString(component?.name, "component");
+  const componentLocation = firstString(component?.location);
+  const componentPurpose = firstString(component?.purpose);
+  const hints = buildComponentGuideHints(component);
+  const aliasHint = hints.aliases.join(", ");
+  const beanHopperHint = hints.aliases.some((alias) =>
+    normalizeToken(alias).includes("bean hopper")
+  )
+    ? "Bean hopper means the transparent bowl/container at the top center holding beans."
+    : "";
+  const brewHeadHint = hints.aliases.some((alias) =>
+    ["brew head", "group head", "grouphead", "brew group"].includes(normalizeToken(alias))
+  )
+    ? "Brew/group head means the circular locking outlet directly above the portafilter."
+    : "";
+
+  const prompt = [
+    "Locate one machine component in this single screenshot.",
+    `Asset file name: ${assetName}.`,
+    `Capture label: ${capture.label}.`,
+    `Target component: ${componentName}.`,
+    `Aliases: ${aliasHint}.`,
+    componentLocation ? `Expected location hint: ${componentLocation}.` : "",
+    componentPurpose ? `Expected purpose hint: ${componentPurpose}.` : "",
+    hints.matched ? `Canonical component match: ${hints.matched.canonical}.` : "",
+    beanHopperHint,
+    brewHeadHint,
+    "If the target is visible, return found=true with best-guess coordinates even if confidence is low.",
+    "Return strict JSON only (no markdown):",
+    "{",
+    '  "componentName": "string",',
+    `  "captureLabel": "${capture.label}",`,
+    '  "found": true,',
+    '  "confidence": "high|medium|low",',
+    '  "x": 0.50,',
+    '  "y": 0.20,',
+    '  "reason": "short reason"',
+    "}",
+    "x and y are normalized image coordinates in [0,1], top-left origin.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  const endpoint =
+    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(MODEL_NAME)}:generateContent` +
+    `?key=${encodeURIComponent(apiKey)}`;
+
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      contents: [
+        {
+          parts: [
+            { text: prompt },
+            {
+              inlineData: {
+                mimeType: capture.mimeType,
+                data: capture.data,
+              },
+            },
+          ],
+        },
+      ],
+      generationConfig: {
+        temperature: 0,
+        maxOutputTokens: 260,
+        responseMimeType: "application/json",
+      },
+    }),
+  });
+
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(
+      payload?.error?.message ?? `Gemini single-capture tag request failed with status ${response.status}.`
+    );
+  }
+
+  return getGeminiText(payload);
 }
 
 function buildSearchQueries(assetName, analysis) {
@@ -651,7 +1064,23 @@ app.post("/api/analyze-machine", async (req, res) => {
         // keep null and continue with normalization fallback
       }
     }
-    const analysis = normalizeAnalysis(parsed);
+    const baseAnalysis = normalizeAnalysis(parsed);
+    const analysis = enrichAnalysisWithFallbacks(userAssetName, baseAnalysis);
+    logTagDebug("analyze-machine summary", {
+      assetName: userAssetName,
+      machineName: analysis.machineName,
+      machineType: analysis.machineType,
+      componentCount: analysis.components.length,
+      buttonCount: analysis.buttons.length,
+      fallbackAddedComponents: Math.max(
+        0,
+        analysis.components.length - baseAnalysis.components.length
+      ),
+      fallbackAddedButtons: Math.max(0, analysis.buttons.length - baseAnalysis.buttons.length),
+      usedFallbacks:
+        analysis.components.length !== baseAnalysis.components.length ||
+        analysis.buttons.length !== baseAnalysis.buttons.length,
+    });
     const searchQueries = buildSearchQueries(userAssetName, analysis);
 
     const token = normalizeToken(userAssetName);
@@ -777,48 +1206,124 @@ app.post("/api/tag-component", async (req, res) => {
       rawPreview: previewText(rawText, 500),
     });
 
-    const parsed = parseJsonLoose(rawText);
+    let parsed = parseTagModelOutput(rawText);
+    if (!parsed && rawText) {
+      try {
+        const repairedText = await coerceToStrictJson(apiKey, rawText);
+        parsed = parseTagModelOutput(repairedText);
+        logTagDebug("tag-component coerce-to-json fallback", {
+          tagRequestId,
+          componentName,
+          repairedPreview: previewText(repairedText, 500),
+          repairedParsed: Boolean(parsed),
+        });
+      } catch (error) {
+        logTagDebug("tag-component coerce-to-json failed", {
+          tagRequestId,
+          componentName,
+          message: error?.message ?? "Unknown coercion error",
+        });
+      }
+    }
+
     if (!parsed) {
-      logTagDebug("tag-component parseJsonLoose returned null", {
+      logTagDebug("tag-component parse failed after primary + coerce", {
         tagRequestId,
         componentName,
       });
     }
-    const found = Boolean(parsed?.found);
-    const x = Number(parsed?.x);
-    const y = Number(parsed?.y);
-    const xIsValid = Number.isFinite(x) && x >= 0 && x <= 1;
-    const yIsValid = Number.isFinite(y) && y >= 0 && y <= 1;
-    const suggestedCaptureLabel = firstString(parsed?.captureLabel);
-    const captureLabel = found
-      ? normalizeTagCaptureLabel(suggestedCaptureLabel, parsedCaptures[0]?.label || "current")
-      : null;
-    const finalFound = found && xIsValid && yIsValid;
-    const finalComponentName = firstString(parsed?.componentName, componentName);
-    const confidence = firstString(parsed?.confidence, "unknown");
-    const reason = firstString(parsed?.reason);
+
+    let normalized = normalizeTagResult(
+      parsed,
+      componentName,
+      parsedCaptures[0]?.label || "current"
+    );
+
+    if (!normalized.finalFound) {
+      const rankedCaptures = rankCapturesForComponent(component, parsedCaptures).slice(0, 6);
+      logTagDebug("tag-component single-capture fallback start", {
+        tagRequestId,
+        componentName,
+        attempts: rankedCaptures.map((capture) => capture.label),
+      });
+
+      for (const capture of rankedCaptures) {
+        try {
+          const fallbackRaw = await fetchGeminiTagForSingleCapture(
+            apiKey,
+            userAssetName,
+            component,
+            capture
+          );
+          let fallbackParsed = parseTagModelOutput(fallbackRaw);
+          if (!fallbackParsed && fallbackRaw) {
+            try {
+              const repairedFallback = await coerceToStrictJson(apiKey, fallbackRaw);
+              fallbackParsed = parseTagModelOutput(repairedFallback);
+            } catch {
+              // keep null and continue to next capture
+            }
+          }
+
+          const fallbackNormalized = normalizeTagResult(fallbackParsed, componentName, capture.label);
+          logTagDebug("tag-component single-capture fallback result", {
+            tagRequestId,
+            componentName,
+            captureLabel: capture.label,
+            rawPreview: previewText(fallbackRaw, 260),
+            finalFound: fallbackNormalized.finalFound,
+            x: fallbackNormalized.x,
+            y: fallbackNormalized.y,
+            confidence: fallbackNormalized.confidence,
+            reason: fallbackNormalized.reason,
+          });
+
+          if (fallbackNormalized.finalFound) {
+            normalized = {
+              ...fallbackNormalized,
+              reason: fallbackNormalized.reason || "Recovered with single-capture fallback.",
+            };
+            break;
+          }
+        } catch (error) {
+          logTagDebug("tag-component single-capture fallback failed", {
+            tagRequestId,
+            componentName,
+            captureLabel: capture.label,
+            message: error?.message ?? "Unknown fallback error",
+          });
+        }
+      }
+    }
+
+    const finalComponentName = normalized.componentName;
+    const confidence = normalized.confidence;
+    const reason =
+      normalized.reason ||
+      (!normalized.finalFound ? "Gemini returned unparseable or low-confidence coordinates." : "");
+
     logTagDebug("tag-component parsed result", {
       tagRequestId,
       componentName: finalComponentName,
-      found,
-      x,
-      y,
-      xIsValid,
-      yIsValid,
-      finalFound,
-      captureLabel,
-      suggestedCaptureLabel,
+      found: normalized.found,
+      x: normalized.x,
+      y: normalized.y,
+      xIsValid: normalized.xIsValid,
+      yIsValid: normalized.yIsValid,
+      finalFound: normalized.finalFound,
+      captureLabel: normalized.captureLabel,
+      suggestedCaptureLabel: normalized.suggestedCaptureLabel,
       confidence,
       reason,
     });
 
     res.json({
       componentName: finalComponentName,
-      found: finalFound,
+      found: normalized.finalFound,
       confidence,
-      captureLabel: finalFound ? captureLabel : null,
-      x: finalFound ? x : null,
-      y: finalFound ? y : null,
+      captureLabel: normalized.finalFound ? normalized.captureLabel : null,
+      x: normalized.finalFound ? normalized.x : null,
+      y: normalized.finalFound ? normalized.y : null,
       reason,
       rawText,
     });
