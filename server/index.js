@@ -1194,6 +1194,7 @@ async function fetchGeminiSvgOverlayForComponent(apiKey, assetName, component, c
   const componentName = firstString(component?.name, "component");
   const componentLocation = firstString(component?.location);
   const componentPurpose = firstString(component?.purpose);
+  const inferredInteractionType = inferInteractionType(component);
   const seedX = numberInRange(component?.x, 0, 1, 0.5);
   const seedY = numberInRange(component?.y, 0, 1, 0.5);
   const seedCapture = normalizeTagCaptureLabel(component?.captureLabel, "current");
@@ -1207,8 +1208,18 @@ async function fetchGeminiSvgOverlayForComponent(apiKey, assetName, component, c
     `Aliases: ${aliasHint}.`,
     componentLocation ? `Location hint: ${componentLocation}.` : "",
     componentPurpose ? `Purpose hint: ${componentPurpose}.` : "",
+    `Inferred interaction type hint: ${inferredInteractionType}.`,
     `Existing tag seed: capture=${seedCapture}, x=${seedX.toFixed(4)}, y=${seedY.toFixed(4)}.`,
     "Choose the best capture where the component is most visible and return normalized placement values.",
+    "The goal is to explain the component's role in the whole espresso workflow, not decorative art.",
+    "Keep the visual tightly localized to the real component and avoid large off-target graphics.",
+    "Use realistic intent cues:",
+    "- bean hopper: lid opens and beans feed toward grinder",
+    "- pressure gauge: needle sweeps within brew pressure range",
+    "- brew head/portafilter: extraction flow toward cup",
+    "- steam wand: steam plume near wand tip",
+    "- dials: rotational tuning motion",
+    "- buttons: concise pulse/activation",
     "Design interaction behavior for the component meaningfully, for example:",
     "- button flashes/pulses",
     "- lid lifts",

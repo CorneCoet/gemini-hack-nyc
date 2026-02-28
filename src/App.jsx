@@ -53,6 +53,104 @@ function inferInteractionTypeFromHints(...values) {
   return "generic";
 }
 
+function deriveComponentIntent(componentLike) {
+  const name = String(componentLike?.name || "");
+  const location = String(componentLike?.location || "");
+  const purpose = String(componentLike?.purpose || componentLike?.interactionSummary || "");
+  const token = `${name} ${location} ${purpose}`.toLowerCase();
+
+  const fallbackGoal = purpose || "Supports a step in the espresso workflow.";
+  const fallback = {
+    intentKey: "generic",
+    stage: "Machine Workflow",
+    goal: fallbackGoal,
+    motionCue: "Highlight this component activity in context.",
+    preferredInteractionType: inferInteractionTypeFromHints(name, location, purpose),
+  };
+
+  if (/(bean hopper|hopper|bean)/.test(token)) {
+    return {
+      intentKey: "hopper",
+      stage: "Bean Supply",
+      goal: "Stores beans and feeds the grinder.",
+      motionCue: "Lid lifts and bean flow drops toward grinding.",
+      preferredInteractionType: "lid",
+    };
+  }
+
+  if (/(grind amount|grind size|dose|dial|knob|selector|burr)/.test(token)) {
+    return {
+      intentKey: "grind-control",
+      stage: "Grinding",
+      goal: "Sets grind amount/fineness before extraction.",
+      motionCue: "Dial rotates between finer and coarser settings.",
+      preferredInteractionType: "dial",
+    };
+  }
+
+  if (/(pressure gauge|gauge|pressure)/.test(token)) {
+    return {
+      intentKey: "pressure-gauge",
+      stage: "Extraction Control",
+      goal: "Shows brew pressure to keep extraction in range.",
+      motionCue: "Needle sweeps through the espresso pressure zone.",
+      preferredInteractionType: "gauge",
+    };
+  }
+
+  if (/(brew head|group head|grouphead|shower head)/.test(token)) {
+    return {
+      intentKey: "brew-head",
+      stage: "Extraction",
+      goal: "Delivers pressurized water through the coffee puck.",
+      motionCue: "Flow pulses downward from brew head to puck.",
+      preferredInteractionType: "lever",
+    };
+  }
+
+  if (/(portafilter|filter holder|basket)/.test(token)) {
+    return {
+      intentKey: "portafilter",
+      stage: "Extraction",
+      goal: "Holds grounds and channels espresso into the cup.",
+      motionCue: "Extraction flow streams from the portafilter outlet.",
+      preferredInteractionType: "lever",
+    };
+  }
+
+  if (/(steam wand|wand|froth|milk)/.test(token)) {
+    return {
+      intentKey: "steam-wand",
+      stage: "Milk Texturing",
+      goal: "Injects steam for heating and frothing milk.",
+      motionCue: "Steam plume rises to indicate texturing action.",
+      preferredInteractionType: "lever",
+    };
+  }
+
+  if (/(power button|1 cup|2 cup|button|switch|start|stop|filter size)/.test(token)) {
+    return {
+      intentKey: "control-button",
+      stage: "Control Input",
+      goal: fallbackGoal,
+      motionCue: "Control pulses to show command activation.",
+      preferredInteractionType: "button",
+    };
+  }
+
+  if (/(cup|drip tray|spout|outlet)/.test(token)) {
+    return {
+      intentKey: "output",
+      stage: "Output",
+      goal: "Collects or guides brewed espresso output.",
+      motionCue: "Flow indicator points toward final cup output.",
+      preferredInteractionType: "generic",
+    };
+  }
+
+  return fallback;
+}
+
 function formatConfidence(value) {
   if (!value || typeof value !== "string") return "unknown";
   return value.trim().toLowerCase();
@@ -124,6 +222,20 @@ function numberInRange(value, min, max, fallback) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return fallback;
   return Math.min(max, Math.max(min, numeric));
+}
+
+function buildComponentKey(index, componentName) {
+  return `${index}-${String(componentName || "component")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")}`;
+}
+
+function getFirstUntaggedIndex(components, taggedComponents) {
+  const taggedSet = new Set(toSafeArray(taggedComponents).map((entry) => Number(entry?.sourceIndex)));
+  for (let index = 0; index < toSafeArray(components).length; index += 1) {
+    if (!taggedSet.has(index)) return index;
+  }
+  return -1;
 }
 
 function sanitizeSvgMarkup(svgCode) {
@@ -217,8 +329,8 @@ export default function App() {
   const [capturePreview, setCapturePreview] = useState("");
   const [searchResults, setSearchResults] = useState([]);
   const [taggedComponents, setTaggedComponents] = useState([]);
-  const [nextTagIndex, setNextTagIndex] = useState(0);
   const [isTaggingComponent, setIsTaggingComponent] = useState(false);
+  const [taggingTargetIndex, setTaggingTargetIndex] = useState(-1);
   const [tagStatus, setTagStatus] = useState("Run Analyze Model to start tagging components.");
   const [svgOverlays, setSvgOverlays] = useState([]);
   const [overlayStatus, setOverlayStatus] = useState(
@@ -308,7 +420,7 @@ export default function App() {
 
   useEffect(() => {
     setTaggedComponents([]);
-    setNextTagIndex(0);
+    setTaggingTargetIndex(-1);
     setOverlayBusyKey("");
     setOverlayStatus("Tag a component, then generate an interactive SVG overlay.");
     setSvgOverlays((previous) => {
@@ -316,7 +428,7 @@ export default function App() {
       return [];
     });
     if (analysisData) {
-      setTagStatus("Click Tag Next Component to place labels one at a time.");
+      setTagStatus("Click Tag on any component, or use Tag Next Component.");
     } else {
       setTagStatus("Run Analyze Model to start tagging components.");
     }
@@ -871,20 +983,31 @@ export default function App() {
 
     const createInteractiveOverlayGroup = (overlay, position, orientationQuaternion, overlaySize) => {
       const group = new THREE.Group();
-      const interactionType = inferOverlayInteractionType(overlay);
+      const inferredType = inferOverlayInteractionType(overlay);
+      const componentIntent = deriveComponentIntent({
+        name: overlay?.componentName,
+        location: overlay?.location,
+        purpose: overlay?.purpose || overlay?.interactionSummary,
+      });
+      const interactionType =
+        inferredType === "generic"
+          ? normalizeInteractionType(componentIntent.preferredInteractionType, inferredType)
+          : inferredType;
 
       group.position.copy(position);
       group.quaternion.copy(orientationQuaternion);
       group.renderOrder = 12;
       group.userData.svgOverlay = overlay;
       group.userData.interactionType = interactionType;
+      group.userData.componentIntent = componentIntent;
 
       const minDimension = Math.max(Math.min(overlaySize.x, overlaySize.y), 0.02);
       const maxDimension = Math.max(overlaySize.x, overlaySize.y);
       const ringRadius = minDimension * 0.42;
       const ringTube = Math.max(minDimension * 0.05, 0.003);
       const timeSeed = Math.random() * Math.PI * 2;
-      const svgVector = createSvgVectorOverlay(overlay?.svgCode, minDimension * 0.88);
+      const useSvgVector = componentIntent.intentKey === "generic";
+      const svgVector = useSvgVector ? createSvgVectorOverlay(overlay?.svgCode, minDimension * 0.88) : null;
       const svgVectorBaseScale = svgVector ? svgVector.scale.clone() : null;
       const svgVectorBaseZ = svgVector ? svgVector.position.z : 0;
       if (svgVector) {
@@ -897,6 +1020,13 @@ export default function App() {
         const arcMesh = new THREE.Mesh(arcGeometry, createMeshMaterial("#7dd3fc", 0.65));
         arcMesh.rotation.z = Math.PI * 0.74;
         group.add(arcMesh);
+
+        const espressoZone = new THREE.Mesh(
+          new THREE.RingGeometry(ringRadius * 0.72, ringRadius * 0.96, 40, 1, Math.PI * 0.78, Math.PI * 0.44),
+          createMeshMaterial("#86efac", 0.45)
+        );
+        espressoZone.rotation.z = Math.PI * 0.48;
+        group.add(espressoZone);
 
         const needleGeometry = new THREE.BoxGeometry(ringRadius * 0.88, Math.max(ringTube * 1.2, 0.003), ringTube);
         needleGeometry.translate(ringRadius * 0.44, 0, 0);
@@ -915,6 +1045,7 @@ export default function App() {
           const angle = Math.sin(elapsed * 1.8 + timeSeed) * (Math.PI * 0.32);
           needleMesh.rotation.z = angle;
           arcMesh.material.opacity = 0.45 + Math.abs(Math.sin(elapsed * 1.4 + timeSeed)) * 0.28;
+          espressoZone.material.opacity = 0.2 + Math.abs(Math.sin(elapsed * 1.8 + timeSeed)) * 0.26;
           if (svgVector) svgVector.rotation.z = angle * 0.3;
         };
       } else if (interactionType === "dial") {
@@ -956,10 +1087,52 @@ export default function App() {
         tipMesh.position.z = ringTube * 2.2;
         group.add(tipMesh);
 
+        const extractionFlowDots = [];
+        if (componentIntent.intentKey === "brew-head" || componentIntent.intentKey === "portafilter") {
+          for (let index = 0; index < 6; index += 1) {
+            const dot = new THREE.Mesh(
+              new THREE.SphereGeometry(Math.max(ringTube * 0.65, 0.0022), 12, 12),
+              createMeshMaterial("#fef3c7", 0.75)
+            );
+            dot.position.y = -ringRadius * 0.16 - index * ringRadius * 0.2;
+            dot.position.z = ringTube * 1.1;
+            extractionFlowDots.push(dot);
+            group.add(dot);
+          }
+        }
+
+        const steamPuffs = [];
+        if (componentIntent.intentKey === "steam-wand") {
+          for (let index = 0; index < 7; index += 1) {
+            const puff = new THREE.Mesh(
+              new THREE.CircleGeometry(Math.max(ringTube * 1.4, 0.004), 18),
+              createMeshMaterial("#dbeafe", 0.42)
+            );
+            puff.position.y = ringRadius * 0.3 + index * ringRadius * 0.16;
+            puff.position.x = (index % 2 === 0 ? -1 : 1) * ringRadius * 0.12;
+            puff.position.z = ringTube * 1.2;
+            steamPuffs.push(puff);
+            group.add(puff);
+          }
+        }
+
         updater = (elapsed) => {
           const sway = Math.sin(elapsed * 2 + timeSeed) * 0.28;
           stemMesh.rotation.z = sway;
           tipMesh.position.x = Math.sin(elapsed * 2 + timeSeed) * ringRadius * 0.18;
+          extractionFlowDots.forEach((dot, index) => {
+            const phase = (elapsed * 1.8 + timeSeed + index * 0.22) % 1.2;
+            dot.position.y = -ringRadius * 0.16 - phase * ringRadius * 1.24;
+            dot.material.opacity = 0.24 + (1 - phase / 1.2) * 0.6;
+          });
+          steamPuffs.forEach((puff, index) => {
+            const phase = (elapsed * 0.9 + timeSeed * 0.1 + index * 0.18) % 1.4;
+            puff.position.y = ringRadius * 0.2 + phase * ringRadius * 0.88;
+            puff.position.x =
+              Math.sin(elapsed * 1.5 + timeSeed + index * 0.4) * ringRadius * 0.16;
+            puff.scale.setScalar(0.8 + phase * 0.6);
+            puff.material.opacity = Math.max(0, 0.55 - phase * 0.35);
+          });
           if (svgVector) {
             svgVector.rotation.z = sway * 0.65;
           }
@@ -986,6 +1159,21 @@ export default function App() {
         lidHandle.position.z = ringTube * 1.8;
         group.add(lidHandle);
 
+        const beanFlowDots = [];
+        if (componentIntent.intentKey === "hopper") {
+          for (let index = 0; index < 7; index += 1) {
+            const beanDot = new THREE.Mesh(
+              new THREE.SphereGeometry(Math.max(ringTube * 0.55, 0.0019), 10, 10),
+              createMeshMaterial("#d6ad6f", 0.65)
+            );
+            beanDot.position.x = (index % 2 === 0 ? -1 : 1) * ringRadius * 0.09;
+            beanDot.position.y = -ringRadius * 0.1 - index * ringRadius * 0.1;
+            beanDot.position.z = ringTube * 1.1;
+            beanFlowDots.push(beanDot);
+            group.add(beanDot);
+          }
+        }
+
         updater = (elapsed) => {
           const lift = Math.max(0, Math.sin(elapsed * 1.75 + timeSeed)) * ringRadius * 0.52;
           const tilt = -0.18 * Math.min(1, lift / (ringRadius * 0.52));
@@ -994,6 +1182,11 @@ export default function App() {
           lidHandle.position.z = ringTube * 1.8 + lift * 1.05;
           lidHandle.rotation.x = tilt;
           baseRing.material.opacity = 0.2 + Math.abs(Math.sin(elapsed * 1.45 + timeSeed)) * 0.2;
+          beanFlowDots.forEach((beanDot, index) => {
+            const phase = (elapsed * 1.25 + timeSeed * 0.2 + index * 0.18) % 1.25;
+            beanDot.position.y = -ringRadius * 0.08 - phase * ringRadius * 0.95;
+            beanDot.material.opacity = 0.2 + (1 - phase / 1.25) * 0.45;
+          });
           if (svgVector) {
             svgVector.position.z = svgVectorBaseZ + lift * 0.5;
             svgVector.rotation.x = tilt * 0.9;
@@ -1035,6 +1228,7 @@ export default function App() {
         group,
         updater,
         interactionType,
+        componentIntent,
         hasVectorSvg: Boolean(svgVector),
         footprint: maxDimension,
       };
@@ -1138,13 +1332,21 @@ export default function App() {
         anchorMaterial.dispose();
       }
 
-      const svgDecalMesh = await createSvgDecalMesh(
-        hitObject,
-        position,
-        surfaceOrientation.euler,
-        overlaySize,
-        overlay?.svgCode
-      );
+      const componentIntent = deriveComponentIntent({
+        name: overlay?.componentName,
+        location: overlay?.location,
+        purpose: overlay?.intentGoal || overlay?.interactionSummary,
+      });
+      const allowSvgDecal = componentIntent.intentKey === "generic";
+      const svgDecalMesh = allowSvgDecal
+        ? await createSvgDecalMesh(
+            hitObject,
+            position,
+            surfaceOrientation.euler,
+            overlaySize,
+            overlay?.svgCode
+          )
+        : null;
       if (svgDecalMesh) {
         overlayRoot.add(svgDecalMesh);
       }
@@ -1704,13 +1906,21 @@ export default function App() {
       const defaultOverlaySize = useModelPlacement ? 0.14 : 0.12;
       const overlayWidth = numberInRange(payload?.width, 0.05, maxOverlaySize, defaultOverlaySize);
       const overlayHeight = numberInRange(payload?.height, 0.05, maxOverlaySize, defaultOverlaySize);
-      const inferredType = inferInteractionTypeFromHints(
-        taggedComponent.name,
-        taggedComponent.location,
-        taggedComponent.purpose,
-        payload?.interactionSummary
-      );
-      const interactionType = normalizeInteractionType(payload?.interactionType, inferredType);
+      const intent = deriveComponentIntent({
+        name: taggedComponent.name,
+        location: taggedComponent.location,
+        purpose: taggedComponent.purpose || payload?.interactionSummary,
+      });
+      const modelType = normalizeInteractionType(payload?.interactionType, "generic");
+      const interactionType =
+        intent.preferredInteractionType && intent.preferredInteractionType !== "generic"
+          ? intent.preferredInteractionType
+          : normalizeInteractionType(modelType, inferInteractionTypeFromHints(
+              taggedComponent.name,
+              taggedComponent.location,
+              taggedComponent.purpose,
+              payload?.interactionSummary
+            ));
       if (!useModelPlacement) {
         logTagDebug("onGenerateSvgOverlay using tagged anchor", {
           componentName: taggedComponent.name || "component",
@@ -1734,7 +1944,10 @@ export default function App() {
         hitPoint: taggedComponent.hitPoint || null,
         hitNormal: taggedComponent.hitNormal || null,
         interactionType,
-        interactionSummary: payload?.interactionSummary || "",
+        location: taggedComponent.location || "",
+        purpose: taggedComponent.purpose || "",
+        intentGoal: intent.goal,
+        interactionSummary: payload?.interactionSummary || intent.motionCue,
         svgCode: cleanedSvg,
       });
 
@@ -1755,8 +1968,11 @@ export default function App() {
         width: overlayWidth,
         height: overlayHeight,
         interactionSummary:
-          payload?.interactionSummary || "Interactive overlay generated for this component.",
+          payload?.interactionSummary || intent.motionCue,
         interactionType,
+        intentStage: intent.stage,
+        intentGoal: intent.goal,
+        intentMotionCue: intent.motionCue,
         svgCode: cleanedSvg,
         blobUrl,
         placementMode: placement.mode || "decal",
@@ -1774,17 +1990,14 @@ export default function App() {
     }
   };
 
-  const onTagNextComponent = async () => {
+  const onTagComponentAtIndex = async (targetIndex) => {
     const componentsList = toSafeArray(analysisData?.components);
-    const nextComponent = componentsList[nextTagIndex];
-    if (!nextComponent) {
-      setTagStatus("All components are tagged.");
-      logTagDebug("onTagNextComponent no remaining components", {
-        nextTagIndex,
-        componentCount: componentsList.length,
-      });
+    const componentIndex = Number(targetIndex);
+    if (!Number.isInteger(componentIndex) || componentIndex < 0 || componentIndex >= componentsList.length) {
+      setTagStatus("Selected component index is invalid.");
       return;
     }
+    const targetComponent = componentsList[componentIndex];
 
     const captureCurrent = viewerControlsRef.current.captureCurrent;
     const capturePresets = viewerControlsRef.current.capturePresets;
@@ -1792,7 +2005,7 @@ export default function App() {
     const addTagMarker = viewerControlsRef.current.addTagMarker;
     if (typeof captureCurrent !== "function" || typeof addTagMarker !== "function") {
       setTagStatus("Viewer controls are not ready yet.");
-      logTagDebug("onTagNextComponent viewer controls missing", {
+      logTagDebug("onTagComponentAtIndex viewer controls missing", {
         hasCaptureCurrent: typeof captureCurrent === "function",
         hasCapturePresets: typeof capturePresets === "function",
         hasAddTagMarker: typeof addTagMarker === "function",
@@ -1802,19 +2015,20 @@ export default function App() {
     }
 
     setIsTaggingComponent(true);
-    setTagStatus(`Tagging ${nextComponent.name || "component"}...`);
-    logTagDebug("onTagNextComponent start", {
-      nextTagIndex,
-      componentName: nextComponent.name || "component",
-      componentLocation: nextComponent.location || "",
-      componentPurpose: nextComponent.purpose || "",
+    setTaggingTargetIndex(componentIndex);
+    setTagStatus(`Tagging ${targetComponent.name || "component"}...`);
+    logTagDebug("onTagComponentAtIndex start", {
+      componentIndex,
+      componentName: targetComponent.name || "component",
+      componentLocation: targetComponent.location || "",
+      componentPurpose: targetComponent.purpose || "",
     });
 
     try {
       const { currentImageDataUrl, captures } = await collectViewerCaptures();
 
       const base64Data = currentImageDataUrl.split(",")[1] || "";
-      logTagDebug("onTagNextComponent captured screenshot", {
+      logTagDebug("onTagComponentAtIndex captured screenshot", {
         assetName,
         mimeType: currentImageDataUrl.slice(5, currentImageDataUrl.indexOf(";")),
         base64Length: base64Data.length,
@@ -1827,18 +2041,18 @@ export default function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           assetName,
-          component: nextComponent,
+          component: targetComponent,
           imageDataUrl: currentImageDataUrl,
           captures,
         }),
       });
-      logTagDebug("onTagNextComponent api response", {
+      logTagDebug("onTagComponentAtIndex api response", {
         status: response.status,
         ok: response.ok,
       });
 
       const payload = await parseApiResponse(response, "Gemini tagging request failed");
-      logTagDebug("onTagNextComponent parsed payload", {
+      logTagDebug("onTagComponentAtIndex parsed payload", {
         componentName: payload?.componentName,
         found: payload?.found,
         confidence: payload?.confidence,
@@ -1850,17 +2064,17 @@ export default function App() {
 
       if (!payload?.found) {
         const message = payload?.reason
-          ? `Gemini could not find ${nextComponent.name}: ${payload.reason}`
-          : `Gemini could not confidently locate ${nextComponent.name}.`;
+          ? `Gemini could not find ${targetComponent.name}: ${payload.reason}`
+          : `Gemini could not confidently locate ${targetComponent.name}.`;
         setTagStatus(message);
-        logTagDebug("onTagNextComponent not found", { message });
+        logTagDebug("onTagComponentAtIndex not found", { message });
         return;
       }
 
       const selectedCaptureLabel = normalizeTagCaptureLabel(payload?.captureLabel, "current");
       if (selectedCaptureLabel !== "current" && typeof setViewPreset === "function") {
-        logTagDebug("onTagNextComponent switching to capture view for placement", {
-          componentName: nextComponent.name || "component",
+        logTagDebug("onTagComponentAtIndex switching to capture view for placement", {
+          componentName: targetComponent.name || "component",
           selectedCaptureLabel,
         });
         setViewPreset(selectedCaptureLabel);
@@ -1868,61 +2082,77 @@ export default function App() {
       }
 
       const placement = addTagMarker({
-        label: nextComponent.name || `component-${nextTagIndex + 1}`,
+        label: targetComponent.name || `component-${componentIndex + 1}`,
         x: payload.x,
         y: payload.y,
       });
 
       if (!placement.ok) {
-        logTagDebug("onTagNextComponent placement failed", {
-          componentName: nextComponent.name || "component",
+        logTagDebug("onTagComponentAtIndex placement failed", {
+          componentName: targetComponent.name || "component",
           x: payload.x,
           y: payload.y,
           message: placement.message,
         });
         throw new Error(placement.message || "Could not place tag marker in 3D scene.");
       }
-      logTagDebug("onTagNextComponent placement success", {
-        componentName: nextComponent.name || "component",
+      logTagDebug("onTagComponentAtIndex placement success", {
+        componentName: targetComponent.name || "component",
         x: payload.x,
         y: payload.y,
       });
 
-      setTaggedComponents((previous) => [
-        ...previous,
-        {
-          id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          sourceIndex: nextTagIndex,
-          componentKey: `${nextTagIndex}-${(nextComponent.name || "component")
-            .toLowerCase()
-            .replace(/[^a-z0-9]+/g, "-")}`,
-          ...nextComponent,
-          x: payload.x,
-          y: payload.y,
-          confidence: payload.confidence || "unknown",
-          captureLabel: selectedCaptureLabel,
-          meshName: placement.meshName || "",
-          meshUuid: placement.meshUuid || "",
-          hitPoint: placement.hitPoint || null,
-          hitNormal: placement.hitNormal || null,
-        },
-      ]);
-      setNextTagIndex((previous) => previous + 1);
+      const componentKey = buildComponentKey(componentIndex, targetComponent.name);
+      removeSvgOverlay(componentKey);
+      const newTaggedEntry = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        sourceIndex: componentIndex,
+        componentKey,
+        ...targetComponent,
+        x: payload.x,
+        y: payload.y,
+        confidence: payload.confidence || "unknown",
+        captureLabel: selectedCaptureLabel,
+        meshName: placement.meshName || "",
+        meshUuid: placement.meshUuid || "",
+        hitPoint: placement.hitPoint || null,
+        hitNormal: placement.hitNormal || null,
+      };
+
+      setTaggedComponents((previous) => {
+        const remaining = previous.filter((entry) => entry.sourceIndex !== componentIndex);
+        return [...remaining, newTaggedEntry].sort((a, b) => a.sourceIndex - b.sourceIndex);
+      });
       setTagStatus(
-        `Tagged ${nextComponent.name || "component"} on the model surface (${payload.confidence || "unknown"} confidence, ${selectedCaptureLabel} view).`
+        `Tagged ${targetComponent.name || "component"} on the model surface (${payload.confidence || "unknown"} confidence, ${selectedCaptureLabel} view).`
       );
       setOverlayStatus(
-        `Tagged ${nextComponent.name || "component"}. You can now generate an interactive SVG overlay.`
+        `Tagged ${targetComponent.name || "component"}. Auto-animating this component...`
       );
+      await onGenerateSvgOverlay(newTaggedEntry);
     } catch (error) {
-      logTagDebug("onTagNextComponent error", {
-        componentName: nextComponent?.name || "component",
+      logTagDebug("onTagComponentAtIndex error", {
+        componentName: targetComponent?.name || "component",
         message: error?.message || "Unknown tagging error",
       });
       setTagStatus(error?.message ?? "Could not tag this component.");
     } finally {
       setIsTaggingComponent(false);
+      setTaggingTargetIndex(-1);
     }
+  };
+
+  const onTagNextComponent = async () => {
+    const componentsList = toSafeArray(analysisData?.components);
+    const firstUntaggedIndex = getFirstUntaggedIndex(componentsList, taggedComponents);
+    if (firstUntaggedIndex < 0) {
+      setTagStatus("All components are tagged.");
+      logTagDebug("onTagNextComponent no remaining components", {
+        componentCount: componentsList.length,
+      });
+      return;
+    }
+    await onTagComponentAtIndex(firstUntaggedIndex);
   };
 
   const onPresetClick = (presetName) => {
@@ -1951,7 +2181,12 @@ export default function App() {
 
   const buttons = toSafeArray(analysisData?.buttons);
   const components = toSafeArray(analysisData?.components);
-  const nextComponent = components[nextTagIndex] ?? null;
+  const taggedComponentByIndex = new Map(
+    taggedComponents.map((entry) => [Number(entry.sourceIndex), entry])
+  );
+  const taggedIndexSet = new Set(taggedComponentByIndex.keys());
+  const firstUntaggedIndex = getFirstUntaggedIndex(components, taggedComponents);
+  const nextComponent = firstUntaggedIndex >= 0 ? components[firstUntaggedIndex] : null;
   const overlaysByComponentKey = new Map(
     svgOverlays.map((overlay) => [overlay.componentKey, overlay])
   );
@@ -1959,6 +2194,18 @@ export default function App() {
   const machineType = analysisData?.machineType ?? "";
   const identification = analysisData?.identification ?? "";
   const confidence = formatConfidence(analysisData?.confidence);
+  const componentIntentRows = components.map((component, index) => {
+    const intent = deriveComponentIntent(component);
+    return {
+      key: `intent-${index}-${component.name || "component"}`,
+      index,
+      name: component.name || "Unknown component",
+      stage: intent.stage,
+      goal: intent.goal,
+      motionCue: intent.motionCue,
+      tagged: taggedIndexSet.has(index),
+    };
+  });
 
   return (
     <div className={dragActive ? "app drag-active" : "app"}>
@@ -1998,7 +2245,7 @@ export default function App() {
             isTaggingComponent ||
             !assetName ||
             !components.length ||
-            nextTagIndex >= components.length
+            firstUntaggedIndex < 0
           }
         >
           {isTaggingComponent ? "Tagging..." : "Tag Next Component"}
@@ -2077,6 +2324,43 @@ export default function App() {
         </section>
 
         <section className="analysis-block">
+          <h3>Component Intent Map</h3>
+          {componentIntentRows.length ? (
+            <ul className="intent-list">
+              {componentIntentRows.map((item) => (
+                <li key={item.key} className="intent-item">
+                  <p className="intent-header">
+                    <span className={item.tagged ? "tag-chip done" : "tag-chip pending"}>
+                      {item.tagged ? "tagged" : "pending"}
+                    </span>
+                    <strong>{item.name}</strong>
+                  </p>
+                  <p className="intent-stage">{item.stage}</p>
+                  <p className="intent-goal">{item.goal}</p>
+                  <p className="intent-cue">{item.motionCue}</p>
+                  <div className="intent-actions">
+                    <button
+                      type="button"
+                      className="overlay-generate-button"
+                      onClick={() => onTagComponentAtIndex(item.index)}
+                      disabled={isTaggingComponent && taggingTargetIndex !== item.index}
+                    >
+                      {isTaggingComponent && taggingTargetIndex === item.index
+                        ? "Tagging..."
+                        : item.tagged
+                          ? "Retag"
+                          : "Tag Now"}
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="analysis-line">No component intent map available yet.</p>
+          )}
+        </section>
+
+        <section className="analysis-block">
           <h3>
             Components ({components.length}) - Tagged {taggedComponents.length}
           </h3>
@@ -2084,28 +2368,41 @@ export default function App() {
             <ul className="entity-list">
               {components.map((component, index) => (
                 <li key={`component-${index}`} className="component-item">
-                  <span className={index < nextTagIndex ? "tag-chip done" : "tag-chip pending"}>
-                    {index < nextTagIndex ? "tagged" : "pending"}
+                  <span className={taggedIndexSet.has(index) ? "tag-chip done" : "tag-chip pending"}>
+                    {taggedIndexSet.has(index) ? "tagged" : "pending"}
                   </span>
                   <strong>{component.name || "Unknown component"}</strong>
                   {component.location ? ` - ${component.location}` : ""}
                   {component.purpose ? ` - ${component.purpose}` : ""}
-                  {index < nextTagIndex ? (
-                    (() => {
-                      const taggedComponent = taggedComponents.find(
-                        (entry) => entry.sourceIndex === index
-                      );
-                      if (!taggedComponent) {
-                        return (
-                          <p className="component-overlay-meta">
-                            Tagged marker available. Generate SVG overlay next.
-                          </p>
-                        );
-                      }
-                      const overlay = overlaysByComponentKey.get(taggedComponent.componentKey);
-                      const busy = overlayBusyKey === taggedComponent.componentKey;
-                      return (
-                        <div className="component-overlay-actions">
+                  {(() => {
+                    const intent = deriveComponentIntent(component);
+                    return (
+                      <p className="component-overlay-meta">
+                        Stage: {intent.stage}. Goal: {intent.goal}
+                      </p>
+                    );
+                  })()}
+                  {(() => {
+                    const taggedComponent = taggedComponentByIndex.get(index);
+                    const isTagged = Boolean(taggedComponent);
+                    const overlay = taggedComponent
+                      ? overlaysByComponentKey.get(taggedComponent.componentKey)
+                      : null;
+                    const busy = taggedComponent
+                      ? overlayBusyKey === taggedComponent.componentKey
+                      : false;
+                    const taggingThis = isTaggingComponent && taggingTargetIndex === index;
+                    return (
+                      <div className="component-overlay-actions">
+                        <button
+                          type="button"
+                          className="overlay-generate-button"
+                          onClick={() => onTagComponentAtIndex(index)}
+                          disabled={isTaggingComponent && !taggingThis}
+                        >
+                          {taggingThis ? "Tagging..." : isTagged ? "Retag" : "Tag"}
+                        </button>
+                        {taggedComponent ? (
                           <button
                             type="button"
                             className="overlay-generate-button"
@@ -2113,20 +2410,21 @@ export default function App() {
                             disabled={busy}
                           >
                             {busy
-                              ? "Generating SVG..."
+                              ? "Animating..."
                               : overlay
-                                ? "Regenerate SVG Overlay"
-                                : "Generate SVG Overlay"}
+                                ? "Re-animate"
+                                : "Animate"}
                           </button>
-                          {overlay ? (
-                            <p className="component-overlay-meta">
-                              Overlay: {overlay.captureLabel} view - {overlay.interactionSummary}
-                            </p>
-                          ) : null}
-                        </div>
-                      );
-                    })()
-                  ) : null}
+                        ) : null}
+                        {overlay ? (
+                          <p className="component-overlay-meta">
+                            Overlay: {overlay.captureLabel} view - {overlay.interactionSummary}
+                            {overlay.intentStage ? ` [${overlay.intentStage}]` : ""}
+                          </p>
+                        ) : null}
+                      </div>
+                    );
+                  })()}
                 </li>
               ))}
             </ul>
@@ -2136,12 +2434,18 @@ export default function App() {
         </section>
 
         <section className="analysis-block">
-          <h3>SVG Overlays ({svgOverlays.length})</h3>
+          <h3>Interactive Overlays ({svgOverlays.length})</h3>
           {svgOverlays.length ? (
             <ul className="entity-list">
               {svgOverlays.map((overlay) => (
                 <li key={`overlay-${overlay.id}`} className="overlay-list-item">
                   <strong>{overlay.componentName}</strong> - {overlay.captureLabel} view
+                  {overlay.intentStage ? (
+                    <p className="component-overlay-meta">Stage: {overlay.intentStage}</p>
+                  ) : null}
+                  {overlay.intentGoal ? (
+                    <p className="component-overlay-meta">Goal: {overlay.intentGoal}</p>
+                  ) : null}
                   <p className="component-overlay-meta">
                     {overlay.interactionSummary}
                     {overlay.placementMode ? ` (${overlay.placementMode})` : ""}

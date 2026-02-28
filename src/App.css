@@ -287,6 +287,51 @@ body {
   font-size: 12px;
 }
 
+.intent-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 8px;
+}
+
+.intent-item {
+  border: 1px solid #ffffff14;
+  border-radius: 8px;
+  background: #0a111dd6;
+  padding: 8px;
+  display: grid;
+  gap: 4px;
+}
+
+.intent-header {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.intent-stage {
+  margin: 0;
+  color: #7dd3fc;
+  font-size: 12px;
+}
+
+.intent-goal,
+.intent-cue {
+  margin: 0;
+  color: #9bb0cc;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.intent-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
 .overlay-generate-button,
 .overlay-remove-button {
   border: 1px solid #ffffff2f;
