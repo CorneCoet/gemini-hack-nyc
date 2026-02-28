@@ -2,16 +2,30 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
+import { DecalGeometry } from "three/examples/jsm/geometries/DecalGeometry.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 
 const ANALYSIS_MODEL = "gemini-3.1-pro-preview";
 const VIEW_PRESETS = ["iso", "front", "right", "back", "left", "top"];
+const TAG_CAPTURE_LABELS = ["current", ...VIEW_PRESETS];
 const MAX_CAPTURE_DIMENSION = 1024;
 const DEFAULT_GLB_URL = "/breville-coffee-machine.glb";
 const DEFAULT_GLB_NAME = "Breville Coffee Machine.glb";
+const TAG_DEBUG =
+  import.meta.env.DEV ||
+  String(import.meta.env.VITE_TAG_DEBUG || "").toLowerCase() === "true";
 
 function toSafeArray(value) {
   return Array.isArray(value) ? value : [];
+}
+
+function normalizeTagCaptureLabel(value, fallback = "current") {
+  const cleaned = String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  if (TAG_CAPTURE_LABELS.includes(cleaned)) return cleaned;
+  return TAG_CAPTURE_LABELS.includes(fallback) ? fallback : "current";
 }
 
 function formatConfidence(value) {
@@ -39,6 +53,70 @@ function resizeCanvasToDataUrl(canvas, maxDimension, quality) {
 
   context.drawImage(canvas, 0, 0, outWidth, outHeight);
   return offscreen.toDataURL("image/jpeg", quality);
+}
+
+function buildTagGlyph(label) {
+  const words = (label || "")
+    .replace(/[^a-zA-Z0-9 ]/g, " ")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+
+  if (!words.length) return "??";
+  if (words.length === 1) return words[0].slice(0, 2).toUpperCase();
+  return `${words[0][0] || ""}${words[1][0] || ""}`.toUpperCase();
+}
+
+function logTagDebug(message, data) {
+  if (!TAG_DEBUG) return;
+  if (typeof data === "undefined") {
+    console.log(`[tag-debug] ${message}`);
+    return;
+  }
+  console.log(`[tag-debug] ${message}`, data);
+}
+
+function toShortVec3(vector) {
+  if (!vector) return null;
+  const round = (value) => Number(value.toFixed(4));
+  return {
+    x: round(vector.x),
+    y: round(vector.y),
+    z: round(vector.z),
+  };
+}
+
+async function parseApiResponse(response, fallbackMessage) {
+  const contentType = response.headers.get("content-type") || "";
+  const isJson = contentType.includes("application/json");
+
+  if (response.ok) {
+    if (!isJson) {
+      throw new Error(`${fallbackMessage}: unexpected non-JSON response.`);
+    }
+
+    const payload = await response.json().catch(() => null);
+    if (!payload || typeof payload !== "object") {
+      throw new Error(`${fallbackMessage}: invalid JSON response.`);
+    }
+    return payload;
+  }
+
+  if (isJson) {
+    const payload = await response.json().catch(() => null);
+    const detail = payload?.error || payload?.message;
+    if (detail) {
+      throw new Error(detail);
+    }
+  } else {
+    const text = await response.text().catch(() => "");
+    const cleaned = text.replace(/\s+/g, " ").trim().slice(0, 220);
+    if (cleaned) {
+      throw new Error(`${fallbackMessage} (HTTP ${response.status}): ${cleaned}`);
+    }
+  }
+
+  throw new Error(`${fallbackMessage} (HTTP ${response.status}).`);
 }
 
 export default function App() {
@@ -117,10 +195,7 @@ export default function App() {
           }),
         });
 
-        const payload = await response.json().catch(() => ({}));
-        if (!response.ok) {
-          throw new Error(payload?.error ?? "Gemini analysis request failed.");
-        }
+        const payload = await parseApiResponse(response, "Gemini analysis request failed");
 
         setAnalysisData(payload.analysis ?? null);
         setAnalysisRawText(payload.rawText ?? "");
@@ -212,6 +287,7 @@ export default function App() {
     let currentModel = null;
     let dragDepth = 0;
     let frameId = 0;
+    let currentTagWorldSize = 0.08;
     const raycaster = new THREE.Raycaster();
     const ndcVector = new THREE.Vector2();
     const tagGroup = new THREE.Group();
@@ -288,64 +364,171 @@ export default function App() {
       renderFrame();
     };
 
-    const createTagSprite = (label) => {
+    const createTagMaterial = (label) => {
       const canvasTag = document.createElement("canvas");
-      canvasTag.width = 768;
-      canvasTag.height = 192;
+      canvasTag.width = 512;
+      canvasTag.height = 512;
       const context = canvasTag.getContext("2d");
       if (!context) return null;
 
       context.clearRect(0, 0, canvasTag.width, canvasTag.height);
-      context.fillStyle = "#09101be6";
-      context.strokeStyle = "#4de3ff";
+
+      const cx = canvasTag.width / 2;
+      const cy = canvasTag.height / 2;
+      const outerRadius = 210;
+      const innerRadius = 128;
+
+      context.fillStyle = "#d8b77a66";
+      context.beginPath();
+      context.arc(cx, cy, outerRadius, 0, Math.PI * 2);
+      context.fill();
+
+      context.fillStyle = "#eceff4f2";
+      context.beginPath();
+      context.arc(cx, cy, innerRadius, 0, Math.PI * 2);
+      context.fill();
+
+      context.strokeStyle = "#ffffffbb";
       context.lineWidth = 8;
       context.beginPath();
-      if (typeof context.roundRect === "function") {
-        context.roundRect(10, 10, canvasTag.width - 20, canvasTag.height - 20, 32);
-      } else {
-        context.rect(10, 10, canvasTag.width - 20, canvasTag.height - 20);
-      }
-      context.fill();
+      context.arc(cx, cy, innerRadius, 0, Math.PI * 2);
       context.stroke();
 
-      context.fillStyle = "#e6f2ff";
-      context.font = "600 64px 'Space Grotesk', sans-serif";
+      context.fillStyle = "#1e293b";
+      context.font = "700 90px 'Space Grotesk', sans-serif";
       context.textAlign = "center";
       context.textBaseline = "middle";
-      context.fillText(label, canvasTag.width / 2, canvasTag.height / 2);
+      context.fillText(buildTagGlyph(label), cx, cy + 8);
 
       const texture = new THREE.CanvasTexture(canvasTag);
       texture.colorSpace = THREE.SRGBColorSpace;
+      texture.needsUpdate = true;
 
-      const material = new THREE.SpriteMaterial({
+      return new THREE.MeshBasicMaterial({
         map: texture,
         transparent: true,
         depthTest: true,
         depthWrite: false,
+        polygonOffset: true,
+        polygonOffsetFactor: -4,
+        polygonOffsetUnits: -4,
       });
-      const sprite = new THREE.Sprite(material);
-      sprite.scale.set(0.9, 0.22, 1);
-      return sprite;
     };
 
     const clearTagMarkers = () => {
       while (tagGroup.children.length > 0) {
         const child = tagGroup.children[0];
         tagGroup.remove(child);
-        if (child.material?.map) child.material.map.dispose();
-        child.material?.dispose?.();
+        child.geometry?.dispose?.();
+        if (Array.isArray(child.material)) {
+          child.material.forEach((material) => {
+            material?.map?.dispose?.();
+            material?.dispose?.();
+          });
+        } else {
+          child.material?.map?.dispose?.();
+          child.material?.dispose?.();
+        }
       }
       renderFrame();
     };
 
+    const findSurfaceHit = (x, y, meshes) => {
+      let probeCount = 0;
+      const castAt = (sampleX, sampleY) => {
+        probeCount += 1;
+        ndcVector.set(sampleX * 2 - 1, -(sampleY * 2 - 1));
+        raycaster.setFromCamera(ndcVector, camera);
+        const hits = raycaster.intersectObjects(meshes, true);
+        return hits.length ? hits[0] : null;
+      };
+
+      const direct = castAt(x, y);
+      if (direct) {
+        logTagDebug("raycast direct hit", {
+          sample: { x, y },
+          probeCount,
+          objectName: direct.object?.name || "unnamed-mesh",
+          distance: Number(direct.distance.toFixed(4)),
+        });
+        return direct;
+      }
+
+      const maxRadius = 0.16;
+      const radiusStep = 0.01;
+      const angleStep = Math.PI / 6;
+      let bestHit = null;
+      let bestScore = Number.POSITIVE_INFINITY;
+      let bestSample = null;
+
+      for (let radius = radiusStep; radius <= maxRadius; radius += radiusStep) {
+        for (let angle = 0; angle < Math.PI * 2; angle += angleStep) {
+          const sampleX = x + Math.cos(angle) * radius;
+          const sampleY = y + Math.sin(angle) * radius;
+          if (sampleX < 0 || sampleX > 1 || sampleY < 0 || sampleY > 1) continue;
+
+          const hit = castAt(sampleX, sampleY);
+          if (hit) {
+            const score = radius + hit.distance * 0.0001;
+            if (score < bestScore) {
+              bestScore = score;
+              bestHit = hit;
+              bestSample = { sampleX, sampleY, radius };
+            }
+          }
+        }
+      }
+
+      if (bestHit) {
+        logTagDebug("raycast nearby hit", {
+          target: { x, y },
+          sample: {
+            x: Number(bestSample.sampleX.toFixed(4)),
+            y: Number(bestSample.sampleY.toFixed(4)),
+          },
+          radius: Number(bestSample.radius.toFixed(4)),
+          score: Number(bestScore.toFixed(5)),
+          probeCount,
+          objectName: bestHit.object?.name || "unnamed-mesh",
+          distance: Number(bestHit.distance.toFixed(4)),
+        });
+        return bestHit;
+      }
+
+      logTagDebug("raycast miss", {
+        target: { x, y },
+        probeCount,
+        meshCount: meshes.length,
+      });
+      return null;
+    };
+
+    const createSurfaceBadgeFallback = (label, position, normal, tag) => {
+      const badgeMaterial = createTagMaterial(label);
+      if (!badgeMaterial) return null;
+
+      const badgeSize = Math.max(currentTagWorldSize * 0.42, 0.028);
+      const badgeGeometry = new THREE.PlaneGeometry(badgeSize, badgeSize);
+      const badgeMesh = new THREE.Mesh(badgeGeometry, badgeMaterial);
+      const unitNormal = normal.clone().normalize();
+
+      badgeMesh.position.copy(position).addScaledVector(unitNormal, 0.0025);
+      badgeMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), unitNormal);
+      badgeMesh.renderOrder = 11;
+      badgeMesh.userData.tag = tag;
+      return badgeMesh;
+    };
+
     const addTagMarker = (tag) => {
       if (!currentModel) {
+        logTagDebug("addTagMarker skipped: no model loaded");
         return { ok: false, message: "No model loaded." };
       }
 
       const x = Number(tag?.x);
       const y = Number(tag?.y);
       if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || x > 1 || y < 0 || y > 1) {
+        logTagDebug("addTagMarker invalid coordinates", { x: tag?.x, y: tag?.y });
         return { ok: false, message: "Gemini returned invalid coordinates." };
       }
 
@@ -354,33 +537,101 @@ export default function App() {
       currentModel.traverse((object) => {
         if (object.isMesh) meshes.push(object);
       });
+      logTagDebug("addTagMarker start", {
+        label,
+        normalizedPoint: { x, y },
+        meshCount: meshes.length,
+      });
 
       if (!meshes.length) {
+        logTagDebug("addTagMarker failed: no meshes");
         return { ok: false, message: "No mesh surfaces available for tagging." };
       }
 
-      ndcVector.set(x * 2 - 1, -(y * 2 - 1));
-      raycaster.setFromCamera(ndcVector, camera);
-      const hits = raycaster.intersectObjects(meshes, true);
-
-      const markerPosition = new THREE.Vector3();
-      if (hits.length > 0) {
-        markerPosition.copy(hits[0].point);
-        const normal = hits[0].face?.normal?.clone()?.transformDirection(hits[0].object.matrixWorld);
-        if (normal) {
-          markerPosition.addScaledVector(normal, 0.02);
-        }
-      } else {
-        raycaster.ray.at(camera.position.distanceTo(controls.target), markerPosition);
+      const surfaceHit = findSurfaceHit(x, y, meshes);
+      if (!surfaceHit) {
+        logTagDebug("addTagMarker failed: no surface hit", { label, x, y });
+        return {
+          ok: false,
+          message: "Could not project this tag onto the machine surface. Rotate the model and retry.",
+        };
       }
 
-      const sprite = createTagSprite(label);
-      if (!sprite) {
+      const normal = surfaceHit.face?.normal
+        ?.clone()
+        ?.transformDirection(surfaceHit.object.matrixWorld)
+        ?.normalize();
+      if (!normal) {
+        logTagDebug("addTagMarker failed: no surface normal", {
+          label,
+          objectName: surfaceHit.object?.name || "unnamed-mesh",
+        });
+        return { ok: false, message: "Could not determine surface normal for tag placement." };
+      }
+
+      const position = surfaceHit.point.clone().addScaledVector(normal, 0.0015);
+      const orientationMatrix = new THREE.Matrix4().lookAt(
+        new THREE.Vector3(0, 0, 0),
+        normal,
+        new THREE.Vector3(0, 1, 0)
+      );
+      const orientation = new THREE.Euler().setFromRotationMatrix(orientationMatrix);
+      const decalSize = new THREE.Vector3(
+        currentTagWorldSize,
+        currentTagWorldSize,
+        currentTagWorldSize
+      );
+
+      const decalGeometry = new DecalGeometry(
+        surfaceHit.object,
+        position,
+        orientation,
+        decalSize
+      );
+
+      if (!decalGeometry.attributes?.position?.count) {
+        logTagDebug("addTagMarker failed: empty decal geometry", {
+          label,
+          hitObject: surfaceHit.object?.name || "unnamed-mesh",
+          hitPoint: toShortVec3(surfaceHit.point),
+          normal: toShortVec3(normal),
+          position: toShortVec3(position),
+        });
+        decalGeometry.dispose();
+        const fallbackBadge = createSurfaceBadgeFallback(label, position, normal, tag);
+        if (!fallbackBadge) {
+          return { ok: false, message: "Could not build decal geometry at this location." };
+        }
+        tagGroup.add(fallbackBadge);
+        logTagDebug("addTagMarker fallback badge success", {
+          label,
+          hitObject: surfaceHit.object?.name || "unnamed-mesh",
+          placedAt: toShortVec3(fallbackBadge.position),
+        });
+        renderFrame();
+        return { ok: true };
+      }
+
+      const decalMaterial = createTagMaterial(label);
+      if (!decalMaterial) {
+        logTagDebug("addTagMarker failed: no decal material", { label });
+        decalGeometry.dispose();
         return { ok: false, message: "Could not create tag marker texture." };
       }
-      sprite.position.copy(markerPosition);
-      sprite.userData.tag = tag;
-      tagGroup.add(sprite);
+
+      const decalMesh = new THREE.Mesh(decalGeometry, decalMaterial);
+      decalMesh.renderOrder = 10;
+      decalMesh.userData.tag = tag;
+      tagGroup.add(decalMesh);
+      logTagDebug("addTagMarker success", {
+        label,
+        hitObject: surfaceHit.object?.name || "unnamed-mesh",
+        hitPoint: toShortVec3(surfaceHit.point),
+        normal: toShortVec3(normal),
+        placedAt: toShortVec3(position),
+        decalVertexCount: decalGeometry.attributes.position.count,
+      });
+
       renderFrame();
       return { ok: true };
     };
@@ -461,6 +712,7 @@ export default function App() {
       const fov = THREE.MathUtils.degToRad(camera.fov);
       const distance = (maxDimension / (2 * Math.tan(fov / 2))) * 1.3;
       const viewDirection = new THREE.Vector3(1, 0.7, 1).normalize();
+      currentTagWorldSize = THREE.MathUtils.clamp(maxDimension * 0.08, 0.03, 0.2);
 
       camera.up.set(0, 1, 0);
       camera.position.copy(center).addScaledVector(viewDirection, distance);
@@ -647,25 +899,64 @@ export default function App() {
     const nextComponent = componentsList[nextTagIndex];
     if (!nextComponent) {
       setTagStatus("All components are tagged.");
+      logTagDebug("onTagNextComponent no remaining components", {
+        nextTagIndex,
+        componentCount: componentsList.length,
+      });
       return;
     }
 
     const captureCurrent = viewerControlsRef.current.captureCurrent;
+    const capturePresets = viewerControlsRef.current.capturePresets;
+    const setViewPreset = viewerControlsRef.current.setViewPreset;
     const addTagMarker = viewerControlsRef.current.addTagMarker;
     if (typeof captureCurrent !== "function" || typeof addTagMarker !== "function") {
       setTagStatus("Viewer controls are not ready yet.");
+      logTagDebug("onTagNextComponent viewer controls missing", {
+        hasCaptureCurrent: typeof captureCurrent === "function",
+        hasCapturePresets: typeof capturePresets === "function",
+        hasAddTagMarker: typeof addTagMarker === "function",
+        hasSetViewPreset: typeof setViewPreset === "function",
+      });
       return;
     }
 
     setIsTaggingComponent(true);
     setTagStatus(`Tagging ${nextComponent.name || "component"}...`);
+    logTagDebug("onTagNextComponent start", {
+      nextTagIndex,
+      componentName: nextComponent.name || "component",
+      componentLocation: nextComponent.location || "",
+      componentPurpose: nextComponent.purpose || "",
+    });
 
     try {
       await waitForRenderFrames();
-      const imageDataUrl = captureCurrent();
-      if (!imageDataUrl) {
+      const currentImageDataUrl = captureCurrent();
+      if (!currentImageDataUrl) {
         throw new Error("Could not capture current view for tagging.");
       }
+
+      const captures = [{ label: "current", imageDataUrl: currentImageDataUrl }];
+      if (typeof capturePresets === "function") {
+        const presetCaptures = await capturePresets();
+        for (const capture of presetCaptures) {
+          if (!capture?.imageDataUrl) continue;
+          captures.push({
+            label: normalizeTagCaptureLabel(capture.label, "current"),
+            imageDataUrl: capture.imageDataUrl,
+          });
+        }
+      }
+
+      const base64Data = currentImageDataUrl.split(",")[1] || "";
+      logTagDebug("onTagNextComponent captured screenshot", {
+        assetName,
+        mimeType: currentImageDataUrl.slice(5, currentImageDataUrl.indexOf(";")),
+        base64Length: base64Data.length,
+        captureCount: captures.length,
+        captureLabels: captures.map((capture) => capture.label),
+      });
 
       const response = await fetch("/api/tag-component", {
         method: "POST",
@@ -673,21 +964,43 @@ export default function App() {
         body: JSON.stringify({
           assetName,
           component: nextComponent,
-          imageDataUrl,
+          imageDataUrl: currentImageDataUrl,
+          captures,
         }),
       });
+      logTagDebug("onTagNextComponent api response", {
+        status: response.status,
+        ok: response.ok,
+      });
 
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(payload?.error ?? "Gemini tagging request failed.");
-      }
+      const payload = await parseApiResponse(response, "Gemini tagging request failed");
+      logTagDebug("onTagNextComponent parsed payload", {
+        componentName: payload?.componentName,
+        found: payload?.found,
+        confidence: payload?.confidence,
+        x: payload?.x,
+        y: payload?.y,
+        captureLabel: payload?.captureLabel,
+        reason: payload?.reason,
+      });
 
       if (!payload?.found) {
         const message = payload?.reason
           ? `Gemini could not find ${nextComponent.name}: ${payload.reason}`
           : `Gemini could not confidently locate ${nextComponent.name}.`;
         setTagStatus(message);
+        logTagDebug("onTagNextComponent not found", { message });
         return;
+      }
+
+      const selectedCaptureLabel = normalizeTagCaptureLabel(payload?.captureLabel, "current");
+      if (selectedCaptureLabel !== "current" && typeof setViewPreset === "function") {
+        logTagDebug("onTagNextComponent switching to capture view for placement", {
+          componentName: nextComponent.name || "component",
+          selectedCaptureLabel,
+        });
+        setViewPreset(selectedCaptureLabel);
+        await waitForRenderFrames();
       }
 
       const placement = addTagMarker({
@@ -697,8 +1010,19 @@ export default function App() {
       });
 
       if (!placement.ok) {
+        logTagDebug("onTagNextComponent placement failed", {
+          componentName: nextComponent.name || "component",
+          x: payload.x,
+          y: payload.y,
+          message: placement.message,
+        });
         throw new Error(placement.message || "Could not place tag marker in 3D scene.");
       }
+      logTagDebug("onTagNextComponent placement success", {
+        componentName: nextComponent.name || "component",
+        x: payload.x,
+        y: payload.y,
+      });
 
       setTaggedComponents((previous) => [
         ...previous,
@@ -711,9 +1035,13 @@ export default function App() {
       ]);
       setNextTagIndex((previous) => previous + 1);
       setTagStatus(
-        `Tagged ${nextComponent.name || "component"} (${payload.confidence || "unknown"} confidence).`
+        `Tagged ${nextComponent.name || "component"} on the model surface (${payload.confidence || "unknown"} confidence, ${selectedCaptureLabel} view).`
       );
     } catch (error) {
+      logTagDebug("onTagNextComponent error", {
+        componentName: nextComponent?.name || "component",
+        message: error?.message || "Unknown tagging error",
+      });
       setTagStatus(error?.message ?? "Could not tag this component.");
     } finally {
       setIsTaggingComponent(false);

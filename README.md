@@ -54,6 +54,7 @@ Then open [http://localhost:4173](http://localhost:4173).
   - visible button list
   - visible component list
 - Click **Tag Next Component** to call Gemini again and place one 3D tag at a time onto the model.
+- Tags are now projected as surface decals on the physical mesh (instead of floating sprites).
 - The server then runs web search queries and shows potential internet matches in the panel.
 - Click **Analyze Model** anytime to re-run analysis.
 - Use the panel controls to manipulate the model:
@@ -64,3 +65,9 @@ Then open [http://localhost:4173](http://localhost:4173).
 - Orbit: left mouse drag
 - Pan: right mouse drag
 - Zoom: mouse wheel
+
+## Troubleshooting
+
+- If tagging reports route errors, restart both web+API servers with:
+  - `npm run dev`
+- Do not run only `npm run dev:web` for Gemini features; that starts the frontend without the API server.
