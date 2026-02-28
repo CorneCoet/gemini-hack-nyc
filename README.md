@@ -1,17 +1,33 @@
-# GLB Dark Viewer
+# GLB Dark Viewer (Node.js + React)
 
-A minimal dark-mode `.glb` viewer built with Three.js.
+A minimal dark-mode `.glb` viewer built with React and Three.js.
 
-## Run
+## Prerequisites
 
-Serve this folder with any static server, for example:
+- Node.js 18+ (Node.js 20 recommended)
+
+## Start Dev Server
 
 ```bash
 cd /Users/cornecoetzee/playground-consulting/gemini-hack-nyc
-python3 -m http.server 4173
+npm install
+npm run dev
 ```
 
-Then open [http://localhost:4173](http://localhost:4173).
+Then open the local URL printed by Vite (usually [http://localhost:5173](http://localhost:5173)).
+
+## Optional: Expose On LAN
+
+```bash
+npm run dev -- --host
+```
+
+## Build And Preview
+
+```bash
+npm run build
+npm run preview
+```
 
 ## Use
 
