@@ -13,7 +13,8 @@ A dark-mode `.glb` viewer built with React + Three.js, with a Gemini-powered rig
 ## Start Dev Server
 
 ```bash
-cd /Users/cornecoetzee/playground-consulting/gemini-hack-nyc
+git clone https://github.com/CorneCoet/gemini-hack-nyc.git
+cd gemini-hack-nyc
 npm install
 cp .env.example .env
 # Edit .env and set GEMINI_API_KEY

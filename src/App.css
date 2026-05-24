@@ -142,9 +142,30 @@ body {
 }
 
 .analysis-model {
-  margin: 0 0 14px 0;
+  margin: 0 0 6px 0;
   color: var(--muted);
   font-size: 12px;
+}
+
+.api-health {
+  margin: 0 0 14px 0;
+  border: 1px solid #ffffff22;
+  border-radius: 8px;
+  padding: 6px 8px;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.api-health.ok {
+  border-color: #5de7b366;
+  background: #0f2d22;
+  color: #b5ffe4;
+}
+
+.api-health.error {
+  border-color: #ff8a8a66;
+  background: #34171c;
+  color: #ffd1d1;
 }
 
 .analyze-button {
