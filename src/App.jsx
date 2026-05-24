@@ -12,6 +12,7 @@ const TAG_CAPTURE_LABELS = ["current", ...VIEW_PRESETS];
 const MAX_CAPTURE_DIMENSION = 1024;
 const DEFAULT_GLB_URL = "/breville-coffee-machine.glb";
 const DEFAULT_GLB_NAME = "Breville Coffee Machine.glb";
+const API_HEALTH_PATH = "/api/health";
 const TAG_DEBUG =
   import.meta.env.DEV ||
   String(import.meta.env.VITE_TAG_DEBUG || "").toLowerCase() === "true";
@@ -337,6 +338,11 @@ export default function App() {
     "Tag a component, then generate an interactive SVG overlay."
   );
   const [overlayBusyKey, setOverlayBusyKey] = useState("");
+  const [apiHealth, setApiHealth] = useState({
+    ok: false,
+    model: ANALYSIS_MODEL,
+    message: "Checking API server...",
+  });
 
   const waitForRenderFrames = useCallback(
     () =>
@@ -406,6 +412,39 @@ export default function App() {
   useEffect(() => {
     analyzeModelRef.current = analyzeModel;
   }, [analyzeModel]);
+
+  useEffect(() => {
+    let ignore = false;
+
+    const checkApiHealth = async () => {
+      try {
+        const response = await fetch(API_HEALTH_PATH);
+        const payload = await parseApiResponse(response, "API health check failed");
+        if (ignore) return;
+
+        setApiHealth({
+          ok: Boolean(payload.ok),
+          model: payload.model || ANALYSIS_MODEL,
+          message: payload.ok ? "API connected" : "API health check returned an unexpected state.",
+        });
+      } catch (error) {
+        if (ignore) return;
+        setApiHealth({
+          ok: false,
+          model: ANALYSIS_MODEL,
+          message:
+            error?.message ||
+            "API unavailable. Start the API server with npm run dev or npm run dev:api.",
+        });
+      }
+    };
+
+    checkApiHealth();
+
+    return () => {
+      ignore = true;
+    };
+  }, []);
 
   useEffect(() => {
     svgOverlaysRef.current = svgOverlays;
@@ -2225,7 +2264,10 @@ export default function App() {
       <aside className="analysis-panel">
         <div className="analysis-head">
           <h2>Gemini Inspector</h2>
-          <p className="analysis-model">{ANALYSIS_MODEL}</p>
+          <p className="analysis-model">{apiHealth.model}</p>
+          <p className={apiHealth.ok ? "api-health ok" : "api-health error"}>
+            {apiHealth.message}
+          </p>
         </div>
 
         <button
